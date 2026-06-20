@@ -141,6 +141,39 @@ function Movement.teleportToMom()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- TELEPORT 3
+-- Teleports to YourHomeFloor1.Exit and fires the touch event to trigger
+-- the floor-transition back up to Floor2.
+-- ─────────────────────────────────────────────────────────────────────────────
+function Movement.teleportFloor1Exit()
+    local hrp = getHRP()
+    if not hrp then
+        warn("[Movement] Could not find HumanoidRootPart for Floor1 Exit teleport.")
+        return false
+    end
+
+    local floor1 = workspace:FindFirstChild("YourHomeFloor1")
+    if not floor1 then
+        warn("[Movement] YourHomeFloor1 not found in Workspace.")
+        return false
+    end
+
+    local exit = floor1:FindFirstChild("Exit")
+    if not (exit and exit:IsA("BasePart")) then
+        warn("[Movement] 'Exit' not found in YourHomeFloor1.")
+        return false
+    end
+
+    print("[Movement] Teleporting to YourHomeFloor1.Exit")
+    triggerTouch(hrp, exit)
+    print("[Movement] Touch fired. Waiting for transition fade...")
+
+    waitForFadeComplete(8)
+    print("[Movement] Fade complete. Ready for next action.")
+    return true
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- SEQUENCE: Floor2 Exit → wait for fade → Mom
 -- Call this to run both teleports back-to-back.
 -- ─────────────────────────────────────────────────────────────────────────────
