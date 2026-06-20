@@ -142,8 +142,8 @@ end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- TELEPORT 3
--- Teleports to YourHomeFloor1.Exit and fires the touch event to trigger
--- the floor-transition back up to Floor2.
+-- Teleports to YourHomeFloor1.Exit (the front door) and fires the touch event
+-- to trigger the transition outside the house into the overworld.
 -- ─────────────────────────────────────────────────────────────────────────────
 function Movement.teleportFloor1Exit()
     local hrp = getHRP()
