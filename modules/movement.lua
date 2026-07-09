@@ -174,6 +174,29 @@ function Movement.teleportFloor1Exit()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- TELEPORT 4
+-- Teleports directly to the Cave (Mine) entrance CFrame.
+-- The cutscene / NPC dialogue starts automatically on arrival;
+-- the caller is responsible for running Dialogue.start() before this
+-- and waiting for the cutscene to finish before proceeding.
+-- ─────────────────────────────────────────────────────────────────────────────
+local CAVE_CFRAME = CFrame.new(313.82, 69.11, 282.87)
+
+function Movement.teleportToCave()
+    local hrp = getHRP()
+    if not hrp then
+        warn("[Movement] Could not find HumanoidRootPart for Cave teleport.")
+        return false
+    end
+
+    print("[Movement] Teleporting to Cave entrance.")
+    hrp.CFrame = CAVE_CFRAME
+    task.wait(0.1)
+    print("[Movement] Arrived at Cave. Awaiting cutscene/dialogue.")
+    return true
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- SEQUENCE: Floor2 Exit → wait for fade → Mom
 -- Call this to run both teleports back-to-back.
 -- ─────────────────────────────────────────────────────────────────────────────
