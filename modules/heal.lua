@@ -1,25 +1,22 @@
 -- heal.lua
--- Auto-healer using the game's internal _G._p API, reverse-engineered from
--- the MrJack LL module bytecode dump.
+-- Auto-healer reverse-engineered from the MrJack LL decompiled source.
 --
--- Heal flow (from bytecode strings):
---   1. Network:get("PDS","areFullHealth") → skip if already full
---   2. Disable walking, fastClose menus
---   3. Utilities:FadeOut()
---   4. unbindIndoorCam() + loadChunk to health center
---   5. getDoor("HealthCenter") → getRoom() → getHealer()
---   6. healer:heal() → NPCChat:manualAdvance() → healer:Destroy()
---   7. Utilities:FadeIn(), re-enable walking
+-- Two heal paths (exact MrJack logic):
+--   A) HasOutsideHealers → Network:get('heal', nil, 'HealMachine1')  (simple, no travel)
+--   B) else → full blackout sequence: save pos, load blackOutTo chunk,
+--              getRoom/getHealer, Network:get('heal','HealthCenter',healer),
+--              reload original chunk, teleport back.
 
 local Heal = {}
 
 local RunService = game:GetService("RunService")
+local Players    = game:GetService("Players")
+local localPlayer = Players.LocalPlayer
 
-local DEFAULT_THRESHOLD = 0.5
-local CHECK_INTERVAL    = 3
+local CHECK_INTERVAL = 0.1   -- matches MrJack's LooP interval
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Registry scan — shared _G._p pattern
+-- Find _p: table with 'Utilities' + 'Battle' keys (MrJack's exact scan)
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local _p = nil
@@ -27,207 +24,265 @@ local _findPFailedAt = nil
 
 local function findP()
     if _findPFailedAt and os.clock() - _findPFailedAt < 5 then return nil end
-    for _, fn in pairs(debug.getregistry()) do
-        if type(fn) == "function" then
-            for _, upvalue in pairs(debug.getupvalues(fn)) do
-                local ok, result = pcall(function() return upvalue.NPCChat end)
-                if ok and type(result) == "table" then
-                    _findPFailedAt = nil
-                    return upvalue
+
+    -- Primary: getgc scan (fastest)
+    if getgc then
+        for _, v in pairs(getgc(true)) do
+            if typeof(v) == "table" and rawget(v, "Utilities") and rawget(v, "Battle") then
+                _findPFailedAt = nil
+                return v
+            end
+        end
+    end
+
+    -- Fallback: debug.getregistry upvalue scan
+    if debug and debug.getregistry then
+        for _, fn in pairs(debug.getregistry()) do
+            if typeof(fn) == "function" then
+                local ok, upvals = pcall(getupvalues or debug.getupvalues, fn)
+                if ok and type(upvals) == "table" then
+                    for _, uv in pairs(upvals) do
+                        if typeof(uv) == "table" and rawget(uv, "Utilities") and rawget(uv, "Battle") then
+                            _findPFailedAt = nil
+                            return uv
+                        end
+                    end
                 end
             end
         end
     end
+
     _findPFailedAt = os.clock()
     return nil
 end
 
 local function getP()
-    if type(_p) ~= "table" then _p = findP() end
+    if type(_p) ~= "table" or not rawget(_p, "Utilities") then
+        _p = findP()
+    end
     return _p
 end
 
-local function safeGet(obj, key)
-    if type(obj) ~= "table" then return nil end
-    local ok, v = pcall(function() return obj[key] end)
-    return ok and v or nil
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Helpers
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function getCurrentBattle()
+    local p = getP()
+    return p and p.Battle and p.Battle.currentBattle or nil
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- HP check via game's own Network:get("PDS","areFullHealth")
--- Falls back to reading party slots directly if Network unavailable.
+-- isFullHealth — Network:get('PDS','areFullHealth') exact from MrJack
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local function isFullHealth()
     local p = getP()
-    if type(p) ~= "table" then return true end -- assume fine if no data
+    if type(p) ~= "table" then return true end
 
-    -- Primary: game's own check (from bytecode: Network:get("PDS","areFullHealth"))
-    local network = safeGet(p, "Network")
+    local network = p.Network
     if type(network) == "table" and type(network.get) == "function" then
         local ok, result = pcall(function()
             return network:get("PDS", "areFullHealth")
         end)
-        if ok and type(result) == "boolean" then
-            return result
-        end
-        -- result may be a table with .data
-        if ok and type(result) == "table" then
-            local data = safeGet(result, "data")
-            if type(data) == "boolean" then return data end
-        end
+        if ok then return result == true end
     end
-
-    -- Fallback: scan party slots
-    for _, key in ipairs({ "Party", "PartyManager" }) do
-        local party = safeGet(p, key)
-        local slots = type(party) == "table" and (safeGet(party, "slots") or party) or nil
-        if type(slots) == "table" then
-            for i = 1, 6 do
-                local slot = slots[i]
-                if type(slot) == "table" then
-                    local hp    = safeGet(slot, "health") or safeGet(slot, "hp") or 0
-                    local maxHp = safeGet(slot, "maxHealth") or safeGet(slot, "maxHp") or 1
-                    if maxHp > 0 and (hp / maxHp) < DEFAULT_THRESHOLD then
-                        return false
-                    end
-                end
-            end
-            return true
-        end
-    end
-
     return true
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Core heal sequence (reverse-engineered from MrJack bytecode)
+-- Core heal — exact MrJack implementation
 -- ─────────────────────────────────────────────────────────────────────────────
+
+local healing = false
 
 local function performHeal()
     local p = getP()
     if type(p) ~= "table" then
-        warn("[Heal] _p not available — cannot heal.")
+        warn("[Heal] Module table not found.")
         return
     end
 
-    local utilities    = safeGet(p, "Utilities")
-    local masterCtrl   = safeGet(p, "MasterControl")
-    local dataManager  = safeGet(p, "DataManager")
-    local menu         = safeGet(p, "Menu")
-    local chat         = safeGet(p, "NPCChat")
+    local network     = p.Network
+    local dataManager = p.DataManager
+    local masterCtrl  = p.MasterControl
+    local menu        = p.Menu
+    local utilities   = p.Utilities
+    local chat        = p.NPCChat
 
-    -- Announce heal in NPC chat if available (matches MrJack: NPCChat:Say("[ma][MrJack]Auto healing..."))
-    if type(chat) == "table" and type(safeGet(chat, "Say")) == "function" then
-        pcall(function() chat:Say("[ma][Macro]Auto healing...") end)
+    if type(network) ~= "table" then
+        warn("[Heal] Network not available.")
+        return
     end
 
-    -- 1. Disable walking
-    if type(masterCtrl) == "table" then
-        pcall(function() masterCtrl.WalkEnabled = false end)
+    local currentChunk = dataManager and dataManager.currentChunk
+    if type(currentChunk) ~= "table" then
+        warn("[Heal] currentChunk not available.")
+        return
     end
 
-    -- 2. Fast-close any open menus
-    if type(menu) == "table" and type(safeGet(menu, "fastClose")) == "function" then
-        pcall(function() menu:fastClose() end)
+    -- PATH A: outdoor healer present in this chunk (simple)
+    local data = rawget(currentChunk, "data") or {}
+    if data.HasOutsideHealers then
+        print("[Heal] Using outdoor HealMachine1.")
+        pcall(function()
+            network:get("heal", nil, "HealMachine1")
+        end)
+        return
     end
 
-    -- 3. Fade out
-    if type(utilities) == "table" and type(safeGet(utilities, "FadeOut")) == "function" then
-        pcall(function() utilities:FadeOut(0.3) end)
-        task.wait(0.4)
-    end
+    -- PATH B: must travel to blackout location
+    local regionData  = rawget(currentChunk, "regionData") or {}
+    local blackOutTo  = regionData.BlackOutTo or data.blackOutTo
+    local origChunkId = rawget(currentChunk, "id")
+    local origCFrame  = nil
 
-    -- 4. Unbind indoor camera if present
-    if type(utilities) == "table" and type(safeGet(utilities, "unbindIndoorCam")) == "function" then
-        pcall(function() utilities:unbindIndoorCam() end)
-    end
+    pcall(function()
+        origCFrame = localPlayer.character.PrimaryPart.CFrame
+    end)
 
-    -- 5. Navigate to HealthCenter via DataManager chunk API
-    local healed = false
-    if type(dataManager) == "table" then
-        local ok = pcall(function()
-            local chunk = dataManager.currentChunk
+    if blackOutTo then
+        print("[Heal] Travelling to blackout chunk: " .. tostring(blackOutTo))
 
-            -- loadChunk to health center region if needed
-            if type(chunk) == "table" and type(chunk.getDoor) == "function" then
-                local door = chunk:getDoor("HealthCenter")
-                if door and type(door.getRoom) == "function" then
-                    local room = door:getRoom()
-                    if room and type(room.getHealer) == "function" then
-                        local healer = room:getHealer()
-                        if healer then
-                            task.wait(0.3)
-                            if type(healer.heal) == "function" then
-                                healer:heal()
-                                healed = true
-                            end
-                            task.wait(0.5)
-                            -- Advance the heal dialogue
-                            if type(chat) == "table" and type(safeGet(chat, "manualAdvance")) == "function" then
-                                pcall(function() chat:manualAdvance() end)
-                            end
-                            task.wait(0.2)
-                            if type(healer.Destroy) == "function" then
-                                pcall(function() healer:Destroy() end)
-                            end
-                        end
-                    end
-                end
+        -- Disable walking + menus
+        if type(masterCtrl) == "table" then
+            pcall(function() masterCtrl.WalkEnabled = false end)
+        end
+        if type(menu) == "table" then
+            pcall(function() menu:disable() end)
+            pcall(function() menu:fastClose(3) end)
+        end
+
+        -- Fade out + announce
+        if type(utilities) == "table" then
+            pcall(function() utilities.FadeOut(1) end)
+        end
+        task.spawn(function()
+            if type(chat) == "table" and type(chat.Say) == "function" then
+                pcall(function() chat:Say("[ma][Macro]Auto healing...") end)
             end
         end)
-        if not ok then
-            warn("[Heal] Chunk-based heal failed, trying TeleportToSpawnBox fallback.")
+
+        -- Teleport to spawn box and unload current chunk
+        if type(utilities) == "table" then
+            pcall(function() utilities.TeleportToSpawnBox() end)
         end
+        pcall(function() currentChunk:unbindIndoorCam() end)
+        pcall(function() currentChunk:destroy() end)
+
+        -- Load blackout chunk
+        pcall(function()
+            currentChunk = dataManager:loadChunk(blackOutTo)
+        end)
     end
 
-    -- 6. Fallback: TeleportToSpawnBox (seen in bytecode alongside heal flow)
-    if not healed and type(utilities) == "table" then
-        if type(safeGet(utilities, "TeleportToSpawnBox")) == "function" then
-            pcall(function() utilities:TeleportToSpawnBox() end)
-            task.wait(1)
+    -- Get HealthCenter room and healer
+    local healthCenter = nil
+    local healer = nil
+
+    pcall(function()
+        local door = currentChunk:getDoor("HealthCenter")
+        healthCenter = currentChunk:getRoom("HealthCenter", door, 1)
+    end)
+
+    task.wait()  -- brief yield (matches MrJack's task.wait() before getHealer)
+
+    pcall(function()
+        healer = network:get("getHealer", "HealthCenter")
+    end)
+
+    -- Heal
+    if healer then
+        pcall(function()
+            network:get("heal", "HealthCenter", healer)
+        end)
+        print("[Heal] Heal fired.")
+    else
+        warn("[Heal] Healer not found.")
+    end
+
+    -- Destroy the HealthCenter room
+    if healthCenter then
+        pcall(function() healthCenter:Destroy() end)
+    end
+
+    -- PATH B cleanup: return to original location
+    if blackOutTo then
+        pcall(function() currentChunk:destroy() end)
+        pcall(function() dataManager:loadChunk(origChunkId) end)
+
+        if origCFrame and type(utilities) == "table" then
+            pcall(function() utilities.Teleport(origCFrame) end)
         end
-    end
 
-    -- 7. Fade back in
-    if type(utilities) == "table" and type(safeGet(utilities, "FadeIn")) == "function" then
-        task.wait(0.2)
-        pcall(function() utilities:FadeIn(0.3) end)
-    end
-
-    -- 8. Re-enable walking
-    if type(masterCtrl) == "table" then
-        pcall(function() masterCtrl.WalkEnabled = true end)
+        if type(menu) == "table" then
+            pcall(function() menu:enable() end)
+        end
+        if type(chat) == "table" and type(chat.manualAdvance) == "function" then
+            pcall(function() chat:manualAdvance() end)
+        end
+        if type(utilities) == "table" then
+            pcall(function() utilities.FadeIn(1) end)
+        end
+        if type(masterCtrl) == "table" then
+            pcall(function() masterCtrl.WalkEnabled = true end)
+        end
     end
 
     print("[Heal] Heal sequence complete.")
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- shouldHeal — preconditions from MrJack (exact conditions)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function shouldHeal()
+    local p = getP()
+    if type(p) ~= "table" then return false end
+
+    local masterCtrl  = p.MasterControl
+    local menu        = p.Menu
+    local dataManager = p.DataManager
+    local objManager  = p.ObjectiveManager
+
+    local chunk = dataManager and dataManager.currentChunk
+    if type(chunk) ~= "table" then return false end
+
+    -- Must be walking, menu open, not indoors, no active battle, LoomianCare not blocking
+    if not (type(masterCtrl) == "table" and masterCtrl.WalkEnabled) then return false end
+    if not (type(menu) == "table" and menu.enabled) then return false end
+    if rawget(chunk, "indoors") then return false end
+    if getCurrentBattle() then return false end
+    if type(objManager) == "table" then
+        local disabledBy = rawget(objManager, "disabledBy") or {}
+        if disabledBy.LoomianCare then return false end
+    end
+
+    -- Not already at full health
+    return not isFullHealth()
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- Public API
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local running   = false
-local healing   = false
-local threshold = DEFAULT_THRESHOLD
+local running = false
 
-function Heal.start(options)
+function Heal.start()
     if running then return end
-    options   = options or {}
-    threshold = options.threshold or DEFAULT_THRESHOLD
-    running   = true
-    healing   = false
+    running = true
+    healing = false
     getP()
 
     task.spawn(function()
-        print(string.format("[Heal] Monitor started (threshold %.0f%%).", threshold * 100))
+        print("[Heal] Auto-heal monitor started.")
         while running do
-            if not healing and not isFullHealth() then
+            if not healing and shouldHeal() then
                 healing = true
-                print("[Heal] Triggering heal...")
-                pcall(performHeal)
+                xpcall(performHeal, function(err)
+                    warn("[Heal] Error:", err)
+                end)
                 healing = false
-                print("[Heal] Heal complete.")
             end
             task.wait(CHECK_INTERVAL)
         end
@@ -244,28 +299,15 @@ function Heal.isHealing()
     return healing
 end
 
--- Block until not currently healing (useful for story sequence to wait)
 function Heal.waitIfHealing()
-    while healing do
-        RunService.Heartbeat:Wait()
-    end
+    while healing do RunService.Heartbeat:Wait() end
 end
 
--- One-shot: heal right now if not full. Blocks until done.
-function Heal.checkAndHeal()
-    if not isFullHealth() then
-        healing = true
-        pcall(performHeal)
-        healing = false
-    end
-end
-
--- Override the performHeal function (for future MrJack hook-in if needed)
-function Heal.setPerformHeal(fn)
-    if type(fn) == "function" then
-        performHeal = fn
-        print("[Heal] performHeal() overridden.")
-    end
+-- Force a heal right now regardless of conditions. Blocks until done.
+function Heal.forceHeal()
+    healing = true
+    xpcall(performHeal, function(err) warn("[Heal] forceHeal error:", err) end)
+    healing = false
 end
 
 return Heal

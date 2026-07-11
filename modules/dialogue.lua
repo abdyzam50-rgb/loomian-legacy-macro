@@ -21,30 +21,45 @@ local _p = nil
 local _findPFailedAt = nil
 
 local function findP()
-    if _findPFailedAt and os.clock() - _findPFailedAt < 5 then
-        return nil
-    end
+    if _findPFailedAt and os.clock() - _findPFailedAt < 5 then return nil end
 
-    for _, fn in pairs(debug.getregistry()) do
-        if type(fn) == "function" then
-            for _, upvalue in pairs(debug.getupvalues(fn)) do
-                local ok, result = pcall(function()
-                    return upvalue.NPCChat
-                end)
-                if ok and type(result) == "table" then
-                    _findPFailedAt = nil
-                    return upvalue
+    -- Primary: getgc scan — exact MrJack pattern (rawget Utilities + Battle)
+    if getgc then
+        pcall(function()
+            for _, v in pairs(getgc(true)) do
+                if typeof(v) == "table" and rawget(v, "Utilities") and not (_p and _p.Battle) then
+                    _p = v
                 end
             end
-        end
+        end)
     end
 
-    _findPFailedAt = os.clock()
-    return nil
+    if _p then _findPFailedAt = nil; return _p end
+
+    -- Fallback: debug.getregistry upvalue scan
+    if debug and debug.getregistry then
+        pcall(function()
+            for _, fn in pairs(debug.getregistry()) do
+                if typeof(fn) == "function" and not (_p and _p.Battle) then
+                    pcall(function()
+                        local upvals = getupvalues and getupvalues(fn) or debug.getupvalues(fn)
+                        for _, uv in pairs(upvals) do
+                            if typeof(uv) == "table" and rawget(uv, "Utilities") then
+                                _p = uv
+                            end
+                        end
+                    end)
+                end
+            end
+        end)
+    end
+
+    if _p then _findPFailedAt = nil else _findPFailedAt = os.clock() end
+    return _p
 end
 
 local function getP()
-    if type(_p) ~= "table" then
+    if type(_p) ~= "table" or not rawget(_p, "Utilities") then
         _p = findP()
     end
     return _p
