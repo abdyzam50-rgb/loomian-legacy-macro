@@ -77,7 +77,7 @@ task.wait(0.3)
 
 print("[Watch] Step 1: Setting text to 'X'")
 textBox.Text = "X"
-task.wait(0.2)
+task.wait(1.0)  -- let the game register the text before submitting
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Step 2: Submit with Enter
@@ -87,7 +87,7 @@ print("[Watch] Step 2: Pressing Enter")
 VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.Return, false, game)
 task.wait(0.05)
 VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-task.wait(0.5)
+task.wait(1.5)  -- wait for any confirmation animation before clicking Yes
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Step 3: Click Yes (TextButton[2])
