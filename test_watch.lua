@@ -80,14 +80,24 @@ textBox.Text = "X"
 task.wait(1.0)  -- let the game register the text before submitting
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Step 2: Submit with Enter
+-- Step 2: Submit — fire FocusLost(enterPressed=true) on the TextBox.
+-- This is what actually happens when the player presses Enter in a TextBox;
+-- the game listens to FocusLost to validate input and activate the Yes button.
+-- Raw key events (SendKeyEvent) bypass this and the game ignores them.
 -- ─────────────────────────────────────────────────────────────────────────────
 
-print("[Watch] Step 2: Pressing Enter")
-VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.Return, false, game)
-task.wait(0.05)
-VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
-task.wait(1.5)  -- wait for any confirmation animation before clicking Yes
+print("[Watch] Step 2: Firing FocusLost (enterPressed=true)")
+if firesignal then
+    pcall(function()
+        firesignal(textBox.FocusLost, true, nil)
+    end)
+else
+    -- Fallback: fire via the Instance's own signal table
+    pcall(function()
+        textBox.FocusLost:Fire(true, nil)
+    end)
+end
+task.wait(1.5)  -- wait for game to process submission and activate Yes button
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Step 3: Click Yes (TextButton[2])
