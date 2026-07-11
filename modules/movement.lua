@@ -112,7 +112,8 @@ end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- TELEPORT 2
--- After the floor transition, teleports directly to YourHomeFloor1.Mom.
+-- After the floor transition, waits for YourHomeFloor1 and Mom to fully load,
+-- then teleports directly next to Mom so her dialogue triggers.
 -- ─────────────────────────────────────────────────────────────────────────────
 function Movement.teleportToMom()
     local hrp = getHRP()
@@ -121,21 +122,30 @@ function Movement.teleportToMom()
         return false
     end
 
-    local floor1 = workspace:FindFirstChild("YourHomeFloor1")
+    -- Wait for Floor 1 to appear after the fade transition (up to 15s).
+    print("[Movement] Waiting for YourHomeFloor1 to load...")
+    local floor1 = workspace:WaitForChild("YourHomeFloor1", 15)
     if not floor1 then
-        warn("[Movement] YourHomeFloor1 not found in Workspace.")
+        warn("[Movement] YourHomeFloor1 did not load in time.")
         return false
     end
 
-    local mom = floor1:FindFirstChild("Mom")
+    -- Wait for Mom NPC to appear inside Floor 1 (up to 10s).
+    local mom = floor1:WaitForChild("Mom", 10)
     if not (mom and mom:IsA("BasePart")) then
-        warn("[Movement] 'Mom' not found in YourHomeFloor1.")
-        return false
+        -- Mom might be a Model — look for its PrimaryPart or any BasePart child.
+        if mom and mom:IsA("Model") then
+            mom = mom.PrimaryPart or mom:FindFirstChildWhichIsA("BasePart", true)
+        end
+        if not (mom and mom:IsA("BasePart")) then
+            warn("[Movement] 'Mom' BasePart not found in YourHomeFloor1.")
+            return false
+        end
     end
 
     print("[Movement] Teleporting to YourHomeFloor1.Mom")
     hrp.CFrame = mom.CFrame + Vector3.new(0, 3, 0)
-    task.wait(0.1)
+    task.wait(0.2)
     print("[Movement] Arrived at Mom.")
     return true
 end
@@ -175,12 +185,24 @@ end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- TELEPORT 4
--- Teleports directly to the Cave (Mine) entrance CFrame.
--- The cutscene / NPC dialogue starts automatically on arrival;
--- the caller is responsible for running Dialogue.start() before this
--- and waiting for the cutscene to finish before proceeding.
+-- Teleports to the Cave (Mine) entrance and nudges along the Z axis until
+-- the cutscene trigger fires (detected by the dialogue monitor going active).
+-- isChatting callback is injected by main.lua via Movement.setDialogueCheck().
 -- ─────────────────────────────────────────────────────────────────────────────
-local CAVE_CFRAME = CFrame.new(313.82, 69.11, 282.87)
+local CAVE_BASE = Vector3.new(313.82, 69.11, 282.87)
+
+local _isChattingFn = nil
+function Movement.setDialogueCheck(fn)
+    _isChattingFn = fn
+end
+
+local function isDialogueActive()
+    if type(_isChattingFn) == "function" then
+        local ok, result = pcall(_isChattingFn)
+        return ok and result == true
+    end
+    return false
+end
 
 function Movement.teleportToCave()
     local hrp = getHRP()
@@ -190,9 +212,23 @@ function Movement.teleportToCave()
     end
 
     print("[Movement] Teleporting to Cave entrance.")
-    hrp.CFrame = CAVE_CFRAME
-    task.wait(0.1)
-    print("[Movement] Arrived at Cave. Awaiting cutscene/dialogue.")
+    hrp.CFrame = CFrame.new(CAVE_BASE)
+    task.wait(0.3)
+
+    if not isDialogueActive() then
+        -- Nudge toward cave entrance along -Z until the cutscene trigger fires.
+        print("[Movement] Nudging toward Cave trigger...")
+        for offset = 0, -8, -0.5 do
+            hrp.CFrame = CFrame.new(CAVE_BASE + Vector3.new(0, 0, offset))
+            task.wait(0.15)
+            if isDialogueActive() then
+                print("[Movement] Cave cutscene triggered at Z offset " .. offset)
+                break
+            end
+        end
+    end
+
+    print("[Movement] Cave reached. Awaiting cutscene/dialogue.")
     return true
 end
 

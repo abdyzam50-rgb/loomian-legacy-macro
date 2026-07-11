@@ -197,6 +197,36 @@ end
 -- Public API
 -- ─────────────────────────────────────────────────────────────────────────────
 
+-- Expose isChatting so callers (e.g. main.lua) can poll dialogue state.
+function Dialogue.isChatting()
+    return isChatting()
+end
+
+-- Blocks until dialogue becomes active, or timeout (seconds) is reached.
+-- Returns true if dialogue started, false on timeout.
+function Dialogue.waitForStart(timeout)
+    timeout = timeout or 15
+    local deadline = tick() + timeout
+    while tick() < deadline do
+        if isChatting() then return true end
+        task.wait(0.1)
+    end
+    return false
+end
+
+-- Blocks until dialogue finishes (isChatting goes false), or timeout is reached.
+-- Returns true if dialogue ended cleanly, false on timeout.
+function Dialogue.waitForEnd(timeout)
+    timeout = timeout or 60
+    local deadline = tick() + timeout
+    while tick() < deadline do
+        if not isChatting() then return true end
+        task.wait(0.1)
+    end
+    warn("[Dialogue] waitForEnd timed out after " .. timeout .. "s.")
+    return false
+end
+
 local running       = false
 local monitorThread = nil
 

@@ -1,6 +1,6 @@
 -- main.lua
--- Entry point. Paste this file into your executor.
--- Each module is fetched from the GitHub raw URL and loaded at runtime.
+-- Paste this entire file into your executor, or run:
+--   loadstring(game:HttpGet("RAW_URL_TO_THIS_FILE"))()
 
 local BRANCH = "claude/modest-heisenberg-c8a4e2"
 local REPO   = "https://raw.githubusercontent.com/abdyzam50-rgb/loomian-legacy-macro/" .. BRANCH
@@ -25,74 +25,86 @@ local Movement = loadModule("movement")
 local Dialogue = loadModule("dialogue")
 local Battle   = loadModule("battle")
 local Heal     = loadModule("heal")
--- local Shop = loadModule("shop")  -- uncomment when shopId/itemId values are known
+-- local Mom   = loadModule("mom")   -- placeholder: wire in when ready
+-- local Shop  = loadModule("shop")  -- uncomment when shopId/itemId values known
+
+-- Give movement module access to dialogue state for cave nudge detection.
+Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Start background monitors (run for the entire sequence)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+Dialogue.start()
+Heal.start()
+Battle.start()
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Helper: wait for dialogue to start then fully finish.
+-- ─────────────────────────────────────────────────────────────────────────────
+local function waitForDialogue(startTimeout, endTimeout)
+    local started = Dialogue.waitForStart(startTimeout or 10)
+    if not started then
+        warn("[Main] No dialogue detected within timeout — continuing anyway.")
+        return
+    end
+    Dialogue.waitForEnd(endTimeout or 60)
+    task.wait(0.5)  -- small buffer after dialogue closes
+end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Story sequence
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- Start auto-systems that should stay on for the whole run.
-Dialogue.start()
-Heal.start()
-Battle.start()
-
 print("\n[Main] ── Starting story sequence ──\n")
 
--- STEP 1: Go downstairs to Floor 1
-print("[Main] Step 1: Floor 2 → Floor 1")
+-- STEP 1: Floor 2 → Floor 1 (fires exit touch, waits for fade)
+print("[Main] Step 1: Floor 2 Exit")
 Movement.teleportFloor2Exit("Exit")
-task.wait(1)
 
--- STEP 2: Walk to Mom and let dialogue skip handle the conversation
-print("[Main] Step 2: Teleport to Mom")
+-- STEP 2: Teleport to Mom (waits for Floor 1 to load, then moves next to her)
+-- TODO: replace body of this step with Mom module when it's ready:
+--   Mom.start()
+--   Mom.waitForComplete()
+print("[Main] Step 2: Teleporting to Mom")
 Movement.teleportToMom()
-task.wait(5)   -- give dialogue time to trigger and auto-skip
+waitForDialogue(10, 60)   -- wait for Mom dialogue to start and fully finish
 
--- STEP 3: Exit the house to the overworld
-print("[Main] Step 3: Exit house")
-Movement.teleportFloor1Exit()
-task.wait(1)
-
--- STEP 4: Go to the Cave entrance — cutscene starts automatically
-print("[Main] Step 4: Teleport to Cave entrance")
+-- STEP 3: Cave entrance — nudges until cutscene trigger fires, then waits for it to end
+print("[Main] Step 3: Teleporting to Cave entrance")
 Movement.teleportToCave()
-task.wait(8)   -- wait for cave cutscene + dialogue to fully auto-skip
+waitForDialogue(8, 90)    -- cave cutscene can be long
 
--- STEP 5: Go to the Lab — cutscene starts, dialogue skips automatically
-print("[Main] Step 5: Teleport to Lab")
+-- STEP 4: Lab door — cutscene starts, dialogue skipper handles it
+print("[Main] Step 4: Teleporting to Lab")
 Movement.teleportToLab()
-task.wait(5)   -- wait for lab cutscene intro
+waitForDialogue(8, 60)    -- lab intro cutscene
 
 -- ── MANUAL PAUSE ─────────────────────────────────────────────────────────────
--- The script halts here so you can manually choose your starter Loomian.
--- After picking, open the executor console and run:
---   _G.StarterPicked = true
--- ─────────────────────────────────────────────────────────────────────────────
-
 print("\n[Main] ══ PAUSED: Choose your starter Loomian now! ══")
-print("[Main]    When done, run this in the console:  _G.StarterPicked = true\n")
+print("[Main]    When done, run in console:  _G.StarterPicked = true\n")
 
 _G.StarterPicked = false
 repeat task.wait(0.5) until _G.StarterPicked == true
 
-print("[Main] Starter picked. Resuming...")
-task.wait(1)
+print("[Main] Starter picked. Waiting for post-pick dialogue...")
+waitForDialogue(10, 60)   -- dialogue after picking starter
 
--- STEP 6: Post-lab battle — dialogue + battle are already running
-print("[Main] Step 6: Waiting for post-lab battle to finish...")
-local battleDone = Battle.waitForEnd(180)
-if not battleDone then
-    warn("[Main] Post-lab battle timed out — continuing anyway.")
-end
+-- STEP 5: Post-lab battle
+print("[Main] Step 5: Waiting for post-lab battle...")
+Battle.waitForEnd(180)
+
+print("[Main] Battle done. Waiting for any post-battle dialogue...")
+waitForDialogue(5, 30)
 
 print("\n[Main] ── Initial sequence complete! ──")
-print("[Main] Heal and Dialogue monitors remain active.")
-print("[Main] Add more steps below for Route 1 Gate and beyond.")
+print("[Main] Heal, Dialogue, and Battle monitors remain active.")
+print("[Main] Add Route 1 Gate and beyond below when CFrames are ready.")
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- NEXT STEPS (to be added as CFrames are provided):
+-- NEXT STEPS (add CFrames as you provide them):
 --
--- Movement.teleportToRoute1Gate()   -- (CFrame TBD)
--- task.wait(...)
+-- Movement.teleportToRoute1Gate()
+-- waitForDialogue(5, 30)
 -- ...
 -- ─────────────────────────────────────────────────────────────────────────────
