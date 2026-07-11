@@ -1,115 +1,101 @@
 -- test_watch.lua
--- Handles the Watch/nickname UI that appears after Mom dialogue.
--- Run this standalone in your executor to test before making it a module.
---
--- What it does:
---   1. Waits for WatchContainer to appear in PlayerGui
---   2. Finds the TextBox and the two TextButtons inside it
---   3. Sets TextBox text to "X", fires submission, clicks the Yes button
+-- Handles the Watch naming UI after Mom dialogue.
+-- Exact paths confirmed from in-game scan:
+--   TextBox:  MainGui.WatchContainer.Frame.Frame[3].TextBox
+--   Yes btn:  MainGui.WatchContainer.Frame.TextButton[2]
 
-local Players         = game:GetService("Players")
-local GuiService      = game:GetService("GuiService")
+local Players             = game:GetService("Players")
+local GuiService          = game:GetService("GuiService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local localPlayer = Players.LocalPlayer
 local playerGui   = localPlayer:WaitForChild("PlayerGui")
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Wait for WatchContainer to appear (up to 30s)
--- ─────────────────────────────────────────────────────────────────────────────
-
-print("[Watch] Waiting for WatchContainer UI...")
-local watchContainer = nil
-local deadline = tick() + 30
-
-while tick() < deadline do
-    for _, desc in ipairs(playerGui:GetDescendants()) do
-        if desc.Name == "WatchContainer" then
-            watchContainer = desc
-            break
+-- Returns the Nth child with the given name inside parent.
+local function getNthNamed(parent, name, n)
+    local count = 0
+    for _, child in ipairs(parent:GetChildren()) do
+        if child.Name == name then
+            count = count + 1
+            if count == n then return child end
         end
     end
-    if watchContainer then break end
-    task.wait(0.2)
+    return nil
 end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Wait for WatchContainer inside MainGui (up to 30s)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+print("[Watch] Waiting for WatchContainer...")
+
+local mainGui        = playerGui:WaitForChild("MainGui", 30)
+local watchContainer = mainGui and mainGui:WaitForChild("WatchContainer", 30)
 
 if not watchContainer then
-    warn("[Watch] WatchContainer did not appear within 30s — is the dialogue done?")
+    warn("[Watch] WatchContainer not found — make sure the naming UI is open.")
     return
 end
 
-print("[Watch] WatchContainer found: " .. watchContainer:GetFullName())
-task.wait(0.3)  -- let the UI finish animating in
+print("[Watch] WatchContainer found.")
+task.wait(0.3)  -- let UI finish animating in
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Find the TextBox and two TextButtons inside WatchContainer
+-- Navigate to elements using confirmed paths
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local textBox = nil
-local buttons = {}
+local outerFrame = watchContainer:WaitForChild("Frame", 5)
+if not outerFrame then warn("[Watch] WatchContainer.Frame not found.") return end
 
-for _, element in ipairs(watchContainer:GetDescendants()) do
-    if element:IsA("TextBox") and element.Name == "TextBox" then
-        textBox = element
-    elseif element:IsA("TextButton") and element.Name == "TextButton" then
-        table.insert(buttons, element)
-    end
-end
+-- Frame[3] = 3rd child named "Frame" inside outerFrame
+local innerFrame3 = getNthNamed(outerFrame, "Frame", 3)
+if not innerFrame3 then warn("[Watch] Frame[3] not found inside WatchContainer.Frame.") return end
 
-local yesButton = buttons[2]  -- second TextButton is "Yes" / confirm
+local textBox = innerFrame3:FindFirstChildOfClass("TextBox")
+if not textBox then warn("[Watch] TextBox not found inside Frame[3].") return end
 
-if not textBox then
-    warn("[Watch] TextBox not found inside WatchContainer.")
-    return
-end
-if not yesButton then
-    warn("[Watch] Yes button (TextButton[2]) not found inside WatchContainer.")
-    return
-end
+-- TextButton[2] = 2nd child named "TextButton" inside outerFrame (Yes button)
+local yesButton = getNthNamed(outerFrame, "TextButton", 2)
+if not yesButton then warn("[Watch] TextButton[2] (Yes) not found.") return end
 
-print("[Watch] TextBox and Yes button located.")
+print("[Watch] All elements located. Running sequence...")
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Step 1: Fill the TextBox with "X"
--- Direct .Text assignment is the most reliable approach in executor context.
--- Also fires a VIM click on the box to give it focus in case the game checks it.
+-- Step 1: Focus the TextBox and set text to "X"
 -- ─────────────────────────────────────────────────────────────────────────────
 
-print("[Watch] Step 1: Filling TextBox with 'X'")
-
--- Give focus via VIM click (screen coords = AbsolutePosition + GuiInset)
+print("[Watch] Step 1: Clicking TextBox")
 local inset = GuiService:GetGuiInset()
 local boxCenter = textBox.AbsolutePosition + textBox.AbsoluteSize / 2
-local screenX = boxCenter.X + inset.X
-local screenY = boxCenter.Y + inset.Y
 
-VirtualInputManager:SendMouseButtonEvent(screenX, screenY, 0, true,  game, 1)
+VirtualInputManager:SendMouseButtonEvent(
+    boxCenter.X + inset.X, boxCenter.Y + inset.Y, 0, true, game, 1)
 task.wait(0.05)
-VirtualInputManager:SendMouseButtonEvent(screenX, screenY, 0, false, game, 1)
+VirtualInputManager:SendMouseButtonEvent(
+    boxCenter.X + inset.X, boxCenter.Y + inset.Y, 0, false, game, 1)
 task.wait(0.3)
 
--- Set text directly (bypasses per-keystroke delays)
+print("[Watch] Step 1: Setting text to 'X'")
 textBox.Text = "X"
 task.wait(0.2)
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Step 2: Submit with Enter key
+-- Step 2: Submit with Enter
 -- ─────────────────────────────────────────────────────────────────────────────
 
-print("[Watch] Step 2: Pressing Enter to submit")
+print("[Watch] Step 2: Pressing Enter")
 VirtualInputManager:SendKeyEvent(true,  Enum.KeyCode.Return, false, game)
 task.wait(0.05)
 VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
 task.wait(0.5)
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Step 3: Click the Yes/confirm button
--- Try Activate() first (no coordinate math), fall back to VIM.
+-- Step 3: Click Yes (TextButton[2])
+-- firesignal → Activate → VIM fallback
 -- ─────────────────────────────────────────────────────────────────────────────
 
 print("[Watch] Step 3: Clicking Yes button")
 
--- Primary: fire the button's click signal directly
 local fired = false
 
 if firesignal then
@@ -126,15 +112,14 @@ if not fired then
     end)
 end
 
--- Fallback: VIM click at the button's screen position
 if not fired then
     local btnCenter = yesButton.AbsolutePosition + yesButton.AbsoluteSize / 2
-    local bx = btnCenter.X + inset.X
-    local by = btnCenter.Y + inset.Y
-    VirtualInputManager:SendMouseButtonEvent(bx, by, 0, true,  game, 1)
+    VirtualInputManager:SendMouseButtonEvent(
+        btnCenter.X + inset.X, btnCenter.Y + inset.Y, 0, true, game, 1)
     task.wait(0.05)
-    VirtualInputManager:SendMouseButtonEvent(bx, by, 0, false, game, 1)
+    VirtualInputManager:SendMouseButtonEvent(
+        btnCenter.X + inset.X, btnCenter.Y + inset.Y, 0, false, game, 1)
 end
 
 task.wait(0.3)
-print("[Watch] Sequence complete.")
+print("[Watch] Done.")
