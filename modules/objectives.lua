@@ -9,9 +9,8 @@
 
 local Objectives = {}
 
-local Players           = game:GetService("Players")
-local Workspace         = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players   = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 
 local localPlayer = Players.LocalPlayer
 local playerGui   = localPlayer:WaitForChild("PlayerGui")
@@ -68,48 +67,9 @@ local ObjectiveConfig = {
 
 local DEFAULT_WAYPOINT_DELAY = 5
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Level tracker
--- Hooks all RemoteEvents in ReplicatedStorage and scans payloads for the
--- active Loomian's level (looks for "switch" + Loomian name pattern).
--- ─────────────────────────────────────────────────────────────────────────────
-
-local currentLevel = _G.StarterLevel or 5
-local trackedName  = "Eaglit"   -- override via Objectives.setTrackedName()
-
-local function parseLevelFromTable(tbl)
-    if type(tbl) ~= "table" then return end
-    for _, val in pairs(tbl) do
-        if type(val) == "string" then
-            if val:find('"switch"') and val:find(trackedName) then
-                local lvl = val:match("L(%d+)")
-                if lvl then
-                    currentLevel = tonumber(lvl)
-                    _G.StarterLevel = currentLevel
-                    print("[Objectives] Level updated:", currentLevel)
-                    return true
-                end
-            end
-        elseif type(val) == "table" then
-            if parseLevelFromTable(val) then return true end
-        end
-    end
-end
-
-local hookedRemotes = {}
-local function hookRemote(remote)
-    if not remote:IsA("RemoteEvent") or hookedRemotes[remote] then return end
-    hookedRemotes[remote] = true
-    remote.OnClientEvent:Connect(function(...)
-        for _, arg in ipairs({...}) do
-            parseLevelFromTable(arg)
-        end
-    end)
-end
-
-local function startLevelTracker()
-    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do hookRemote(obj) end
-    ReplicatedStorage.DescendantAdded:Connect(hookRemote)
+-- Level is tracked by battle.lua via EVT packet hooks and written to _G.StarterLevel.
+local function currentLevel()
+    return _G.StarterLevel or 5
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -249,8 +209,8 @@ local function checkText(text)
     for _, objective in ipairs(ObjectiveConfig) do
         if containsSubstring(text, objective.match) then
             -- Level guard: if too low, enable auto-hunt and skip teleport
-            if objective.minLevel and currentLevel < objective.minLevel then
-                print("[Objectives] Level too low (" .. currentLevel .. " < " .. objective.minLevel .. ") for:", objective.match)
+            if objective.minLevel and currentLevel() < objective.minLevel then
+                print("[Objectives] Level too low (" .. currentLevel() .. " < " .. objective.minLevel .. ") for:", objective.match)
                 if not autoHunting then toggleAutoHunt() end
                 return
             end
@@ -282,8 +242,6 @@ local running = false
 function Objectives.start()
     if running then return end
     running = true
-
-    startLevelTracker()
 
     local backGui = playerGui:WaitForChild("BackGui", 30)
     if not backGui then
@@ -321,14 +279,8 @@ function Objectives.resetMatch()
     lastTriggeredMatch = nil
 end
 
--- Override which Loomian name the level tracker looks for.
-function Objectives.setTrackedName(name)
-    trackedName = name
-    print("[Objectives] Tracking level for:", name)
-end
-
 function Objectives.getLevel()
-    return currentLevel
+    return currentLevel()
 end
 
 return Objectives

@@ -143,11 +143,13 @@ local function applyPartyPacket(packet)
                 elseif type(hp) == "number" and hp <= 1 then
                     frac = hp
                 end
+                local lvl = tonumber(safeGet(mon, "level")) or tonumber(safeGet(mon, "Level"))
                 newParty[idx] = {
                     name       = safeGet(mon, "name") or safeGet(mon, "species") or ("Slot" .. idx),
                     active     = safeGet(mon, "active") == true,
                     fainted    = safeGet(mon, "fainted") == true or (frac and frac <= 0),
                     healthFrac = frac,
+                    level      = lvl,
                 }
             end
         end
@@ -176,6 +178,9 @@ local function applyPartyPacket(packet)
                 entry.healthFrac = aHp / aMaxHp
             end
             activeSlot = foundSlot
+            -- Propagate lead level to shared global so objectives.lua can read it
+            local lvl = entry.level or tonumber(safeGet(activeMon, "level")) or tonumber(safeGet(activeMon, "Level"))
+            if lvl then _G.StarterLevel = lvl end
         end
     end
 

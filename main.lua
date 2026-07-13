@@ -82,15 +82,9 @@ print("[Main] Step 4: Teleporting to Lab")
 Movement.teleportToLab()
 waitForDialogue(8, 60)
 
--- ── MANUAL PAUSE ─────────────────────────────────────────────────────────────
-print("\n[Main] ══ PAUSED: Choose your starter Loomian now! ══")
-print("[Main]    When done, run in the executor console:  _G.StarterPicked = true\n")
-
-_G.StarterPicked = false
-repeat task.wait(0.5) until _G.StarterPicked == true
-
-print("[Main] Starter picked. Waiting for post-pick dialogue...")
-waitForDialogue(10, 60)
+-- Starter is given automatically through the lab cutscene dialogue.
+print("[Main] Waiting for starter dialogue / pick sequence...")
+waitForDialogue(15, 90)
 
 -- STEP 5: Post-lab battle (dialogue skipper + auto-battler handle this)
 print("[Main] Step 5: Waiting for post-lab battle to finish...")
