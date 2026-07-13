@@ -1,10 +1,10 @@
 -- main.lua
 -- Entry point for the Loomian Legacy macro.
 -- Paste this entire file into your executor, or loadstring it from the raw GitHub URL:
---   loadstring(game:HttpGet("https://raw.githubusercontent.com/abdyzam50-rgb/loomian-legacy-macro/main/main.lua"))()
+--   loadstring(game:HttpGet("https://raw.githubusercontent.com/abdyzam50-rgb/loomain-legacy-macro/main/main.lua"))()
 
 local BRANCH = "main"
-local REPO   = "https://raw.githubusercontent.com/abdyzam50-rgb/loomian-legacy-macro/" .. BRANCH
+local REPO   = "https://raw.githubusercontent.com/abdyzam50-rgb/loomain-legacy-macro/" .. BRANCH
 
 local function loadModule(name)
     local url = REPO .. "/modules/" .. name .. ".lua"
