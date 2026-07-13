@@ -6,6 +6,7 @@
 --   3. Low energy: fightSelectionGroup:LoseFocus(),
 --      inputEvent:fire('rest 0'), exitButtonsMoveChosen()
 --   4. Else: BattleGui:onMoveClicked(slot)
+-- Best-move selection: score = effectiveness * basePower (from battle_move_macro.lua v6.2.3)
 -- Also skips in-battle NPC text via NPCChat flags.
 
 local Battle = {}
@@ -100,12 +101,43 @@ local function getCurrentBattle()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- fireMove — exact MrJack u37 logic
+-- Best-move selection (battle_move_macro.lua v6.2.3)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function getMoveEffectiveness(mv)
+    if type(mv) == "table" and type(mv.effective) == "table" then
+        return tonumber(mv.effective[1]) or 1
+    end
+    return 1
+end
+
+-- Returns bestSlot (1-4) and bestScore, or nil if no move is usable.
+local function selectBestMoveSlot(moves, currentEnergy)
+    local bestSlot, bestScore, bestEnergy = nil, -1, math.huge
+    for i = 1, 4 do
+        local mv = type(moves) == "table" and moves[i] or nil
+        if type(mv) == "table" and not safeGet(mv, "disabled") then
+            local cost = safeGet(mv, "energy") or 0
+            if currentEnergy >= cost then
+                local score = getMoveEffectiveness(mv) * (safeGet(mv, "basePower") or 0)
+                if score > bestScore or (score == bestScore and cost < bestEnergy) then
+                    bestScore  = score
+                    bestEnergy = cost
+                    bestSlot   = i
+                end
+            end
+        end
+    end
+    return bestSlot, bestScore
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- fireMove — MrJack u37 logic + dynamic best-move selection
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local switchingBlocked = false
 
-local function fireMove(slot)
+local function fireMove()
     local p = getP()
     if type(p) ~= "table" then return end
 
@@ -119,17 +151,20 @@ local function fireMove(slot)
         pcall(function() battleGui:mainButtonClicked(1) end)
     end
 
-    local moves = safeGet(battleGui, "moves")
-    local move  = type(moves) == "table" and moves[slot] or nil
-    if type(move) ~= "table" then return end
-
+    local moves         = safeGet(battleGui, "moves")
     local activeMonster = safeGet(battleGui, "activeMonster")
-    local energy        = activeMonster and safeGet(activeMonster, "energy") or math.huge
+    local energy        = activeMonster and safeGet(activeMonster, "energy") or 0
     local bypassEnergy  = activeMonster and safeGet(activeMonster, "bypassEnergy") or false
-    local moveEnergy    = safeGet(move, "energy")
-    local disabled      = safeGet(move, "disabled")
 
-    if moveEnergy and energy < moveEnergy and not bypassEnergy then
+    -- When bypassEnergy, treat energy as effectively infinite for scoring
+    local effectiveEnergy = bypassEnergy and math.huge or energy
+
+    local slot, score = selectBestMoveSlot(moves, effectiveEnergy)
+
+    if slot then
+        pcall(function() battleGui:onMoveClicked(slot) end)
+    else
+        -- No move has enough energy — rest
         pcall(function()
             local fsg = safeGet(battleGui, "fightSelectionGroup")
             if fsg then fsg:LoseFocus() end
@@ -137,8 +172,6 @@ local function fireMove(slot)
             if ev then ev:fire("rest 0") end
             battleGui:exitButtonsMoveChosen()
         end)
-    elseif not disabled then
-        pcall(function() battleGui:onMoveClicked(slot) end)
     end
 end
 
@@ -147,7 +180,6 @@ end
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local running       = false
-local MOVE_SLOT     = 1
 local TICK_RATE     = 0.08
 local FIRE_COOLDOWN = 0.35
 
@@ -157,7 +189,7 @@ function Battle.start()
     getP()
 
     task.spawn(function()
-        print("[Battle] Auto-battle started (move slot " .. MOVE_SLOT .. ").")
+        print("[Battle] Auto-battle started (best-move mode).")
         local lastFireAt = 0
 
         while running do
@@ -165,7 +197,7 @@ function Battle.start()
             if type(battle) == "table" then
                 skipBattleText()
                 if os.clock() - lastFireAt > FIRE_COOLDOWN then
-                    fireMove(MOVE_SLOT)
+                    fireMove()
                     lastFireAt = os.clock()
                 end
             end
@@ -198,10 +230,6 @@ function Battle.runAndWait(timeout)
     local ok = Battle.waitForEnd(timeout or 120)
     Battle.stop()
     return ok
-end
-
-function Battle.setMoveSlot(slot)
-    MOVE_SLOT = slot or 1
 end
 
 return Battle
