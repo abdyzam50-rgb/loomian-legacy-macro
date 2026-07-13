@@ -59,9 +59,12 @@ local function findP()
 end
 
 local function getP()
-    if type(_p) ~= "table" or not rawget(_p, "Utilities") then
-        _p = findP()
+    if type(_p) == "table" and rawget(_p, "Utilities") then return _p end
+    if type(_G.MacroP) == "table" and rawget(_G.MacroP, "Utilities") then
+        _p = _G.MacroP; return _p
     end
+    _p = findP()
+    if _p then _G.MacroP = _p end
     return _p
 end
 
