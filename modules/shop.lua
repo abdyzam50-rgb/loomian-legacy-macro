@@ -1,27 +1,19 @@
 -- shop.lua
 -- Auto-buyer using the game's internal Network:get("PDS","buyItem") API.
--- Exact buy pattern from MrJack decompiled source:
---   1. Network:get("PDS","getShop", shopId) → enumerate shop items
---   2. entry.Func(item) called per item (populates entry.Enabled)
---   3. if entry.CanAutoBuy() → loop 10x buying each enabled item via
---      Network:get("PDS","buyItem", itemId, 1)
---
--- Our simplified API maps directly onto this: each list entry specifies the
--- shopId and itemIds to buy; CanAutoBuy / Func are wired in start().
+-- Uses LLSPLOIT's maxBuy pattern: query server for max purchasable qty first,
+-- then buy that amount in one call — no hardcoded loop count needed.
 
 local Shop = {}
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Default shopping list
--- Each entry: { shopId = "...", items = { "itemId1", "itemId2", ... }, minStock = M }
---   shopId   — passed to Network:get("PDS","getShop",shopId)
---   items    — list of item IDs to buy (matched against shop data via Func)
---   minStock — only buy when total inventory count falls below this (nil = always)
+-- Each entry: { items = { "itemId1", ... }, minStock = M }
+--   items    — item IDs to buy via maxBuy → buyItem
+--   minStock — only buy when inventory count falls below this
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local DEFAULT_LIST = {
-    -- { shopId = "PotionShop",  items = { "Potion" },        minStock = 5 },
-    -- { shopId = "DiscShop",    items = { "StandardDisc" },  minStock = 5 },
+    { items = { "Potion" }, minStock = 10 },
 }
 
 local CHECK_INTERVAL = 30
@@ -121,15 +113,36 @@ local function getItemCount(itemId)
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Core buy trip — exact MrJack pattern
+-- Core buy — LLSPLOIT maxBuy pattern:
+--   1. Network:get("PDS", "maxBuy", itemId) → server returns max purchasable qty
+--   2. Network:get("PDS", "buyItem", itemId, qty) → buy that amount in one call
 -- ─────────────────────────────────────────────────────────────────────────────
+
+local function buyMaxOfItem(network, itemId)
+    local qty = nil
+    pcall(function()
+        local result = network:get("PDS", "maxBuy", itemId)
+        if type(result) == "number" then
+            qty = result
+        elseif result == true then
+            qty = 1
+        end
+    end)
+
+    if not qty or qty <= 0 then
+        warn("[Shop] maxBuy returned nothing for: " .. tostring(itemId))
+        return
+    end
+
+    pcall(function()
+        network:get("PDS", "buyItem", itemId, qty)
+    end)
+    print(string.format("[Shop] Bought %dx %s.", qty, tostring(itemId)))
+end
 
 local function performBuyTrip(entry)
     local p = getP()
-    if type(p) ~= "table" then
-        warn("[Shop] _p not available — skipping trip.")
-        return
-    end
+    if type(p) ~= "table" then warn("[Shop] _p not available.") return end
 
     local network = rawget(p, "Network")
     if type(network) ~= "table" or type(network.get) ~= "function" then
@@ -137,58 +150,9 @@ local function performBuyTrip(entry)
         return
     end
 
-    -- Check shop is open (menu.shop.shopId must be nil, matching MrJack guard)
-    local menu = rawget(p, "Menu")
-    local shopMenu = type(menu) == "table" and rawget(menu, "shop") or nil
-    if shopMenu and rawget(shopMenu, "shopId") then
-        warn("[Shop] Shop menu already open — skipping.")
-        return
-    end
-
-    -- Step 1: get shop object and enumerate items (mirrors MrJack's getShop + Func loop)
-    local shopData = nil
-    pcall(function()
-        shopData = network:get("PDS", "getShop", entry.shopId)
-    end)
-    if type(shopData) ~= "table" then
-        warn(string.format("[Shop] getShop('%s') returned nothing.", tostring(entry.shopId)))
-        return
-    end
-
-    -- Build the enabled-items set from the entry's items list and the shop's item table.
-    -- Func equivalent: mark each matching item as enabled.
-    local enabled = {}
     for _, itemId in ipairs(entry.items or {}) do
-        enabled[tostring(itemId)] = true
+        buyMaxOfItem(network, itemId)
     end
-
-    -- Step 2: if shop has its own item table, cross-reference to confirm items exist
-    -- (mirrors iterating v48 and calling v47.Func(v51) per shop item)
-    local confirmedEnabled = {}
-    local hasAny = false
-    for shopItemId, _ in pairs(shopData) do
-        local key = tostring(shopItemId)
-        if enabled[key] then
-            confirmedEnabled[key] = true
-            hasAny = true
-        end
-    end
-
-    -- Fallback: if shopData isn't keyed by itemId, trust entry.items directly
-    if not hasAny then
-        confirmedEnabled = enabled
-    end
-
-    -- Step 3: buy loop — exact MrJack: 10 iterations, one unit each
-    for _ = 1, 10 do
-        for itemId, _ in pairs(confirmedEnabled) do
-            pcall(function()
-                network:get("PDS", "buyItem", itemId, 1)
-            end)
-        end
-    end
-
-    print(string.format("[Shop] Bought 10x each from shop '%s'.", tostring(entry.shopId)))
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -222,7 +186,6 @@ function Shop.start(options)
             for _, entry in ipairs(shoppingList) do
                 if not running then break end
                 if shouldBuy(entry) then
-                    print(string.format("[Shop] Buying from shop '%s'...", tostring(entry.shopId)))
                     pcall(performBuyTrip, entry)
                 end
             end
@@ -237,19 +200,13 @@ function Shop.stop()
     print("[Shop] Stopped.")
 end
 
--- One-shot immediate buy: 10x of a single item, bypassing stock check.
-function Shop.buyNow(shopId, itemId, count)
-    count = count or 10
+-- One-shot max buy of a single item, bypassing stock check.
+function Shop.buyNow(itemId)
     local p = getP()
     if type(p) ~= "table" then warn("[Shop] _p not found.") return end
     local network = rawget(p, "Network")
     if type(network) ~= "table" then warn("[Shop] Network not found.") return end
-    print(string.format("[Shop] Immediate buy: %dx %s from %s", count, itemId, shopId))
-    for _ = 1, count do
-        pcall(function()
-            network:get("PDS", "buyItem", tostring(itemId), 1)
-        end)
-    end
+    buyMaxOfItem(network, itemId)
 end
 
 -- Full shopping trip right now against a given list.

@@ -26,6 +26,7 @@ local Movement   = loadModule("movement")
 local Dialogue   = loadModule("dialogue")
 local Battle     = loadModule("battle")
 local Heal       = loadModule("heal")
+local Shop       = loadModule("shop")
 local Objectives = loadModule("objectives")
 
 Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
@@ -36,6 +37,7 @@ Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
 
 Dialogue.start()    -- auto-skips NPC dialogue
 Heal.start()        -- auto-heals when HP is low
+Shop.start()        -- auto-buys potions when stock is low
 Battle.start()      -- auto-battles with best-move + auto-swap
 Objectives.start()  -- reacts to objective text → teleports through story waypoints
 
