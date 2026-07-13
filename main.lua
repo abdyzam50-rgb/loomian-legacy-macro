@@ -67,11 +67,6 @@ print("\n[Main] ── Starting story sequence ──\n")
 print("[Main] Step 1: Floor 2 Exit")
 Movement.teleportFloor2Exit("Exit")
 
--- STEP 2: Teleport to Mom (waits for Floor 1 to load, then moves next to her)
-print("[Main] Step 2: Teleporting to Mom")
-Movement.teleportToMom()
-waitForDialogue(10, 60)
-
 -- STEP 3: Cave entrance — nudges until the cutscene trigger fires, then waits for it to end
 print("[Main] Step 3: Teleporting to Cave entrance")
 Movement.teleportToCave()
