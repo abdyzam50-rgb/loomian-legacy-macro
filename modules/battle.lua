@@ -1,20 +1,79 @@
 -- battle.lua
--- Drives story/trainer battles automatically using the game's own BattleGui API.
--- Exact move-selection logic from MrJack decompiled source (u37 function):
---   1. BattleGui:mainButtonClicked(1) → opens fight menu if not already open
---   2. BattleGui.moves[slot] → inspect move
---   3. If insufficient energy: fightSelectionGroup:LoseFocus(),
---      inputEvent:fire('rest 0'), exitButtonsMoveChosen()
---   4. Else if not disabled: BattleGui:onMoveClicked(slot)
--- Also skips in-battle NPC text via NPCChat flags (same as MrJack).
+-- Auto-battle driver using BattleGui GUI detection.
+-- Watches for BattleGui to appear in MainGui, then loops:
+--   1. Find the red Fight button by color → click it
+--   2. Find Move1.Button → click it
+-- Repeats every 0.3s until BattleGui is removed.
+-- Also skips in-battle NPC text via NPCChat flags.
 
 local Battle = {}
 
+local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
+local localPlayer = Players.LocalPlayer
+local playerGui   = localPlayer:WaitForChild("PlayerGui")
+
 -- ─────────────────────────────────────────────────────────────────────────────
--- _p scan — exact MrJack pattern: rawget(v,"Utilities") via getgc first,
--- then debug.getregistry fallback.
+-- GUI helpers (inline so battle.lua has no dependency on utils.lua)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local GuiService          = game:GetService("GuiService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local function click(button, xOffset, yOffset)
+    if not (button and button.Visible) then return end
+    xOffset = xOffset or 0.5
+    yOffset = yOffset or 0.5
+    local inset = GuiService:GetGuiInset()
+    local x = math.floor(button.AbsolutePosition.X + button.AbsoluteSize.X * xOffset + inset.X + 0.5)
+    local y = math.floor(button.AbsolutePosition.Y + button.AbsoluteSize.Y * yOffset + inset.Y + 0.5)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true,  game, 0)
+    task.wait(0.05)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+end
+
+local function findButton(container, options)
+    for _, obj in ipairs(container:GetDescendants()) do
+        if not options.className
+            or obj.ClassName == options.className
+            or obj.Name == options.className
+        then
+            local isMatch = true
+
+            if options.text then
+                local found = false
+                for _, child in ipairs(obj:GetChildren()) do
+                    if (child:IsA("TextLabel") or child:IsA("TextButton"))
+                        and child.Text:find(options.text) then
+                        found = true; break
+                    end
+                end
+                isMatch = isMatch and found
+            end
+
+            if options.color then
+                if obj:IsA("ImageLabel") then
+                    isMatch = isMatch and (obj.ImageColor3 == options.color)
+                elseif obj:IsA("GuiObject") then
+                    isMatch = isMatch and (obj.BackgroundColor3 == options.color)
+                else
+                    isMatch = false
+                end
+            end
+
+            if options.childName then
+                isMatch = isMatch and (obj:FindFirstChild(options.childName) ~= nil)
+            end
+
+            if isMatch then return obj end
+        end
+    end
+    return nil
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- NPCChat fast-forward (skips in-battle trainer/move text)
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local _p = nil
@@ -22,7 +81,6 @@ local _findPFailedAt = nil
 
 local function findP()
     if _findPFailedAt and os.clock() - _findPFailedAt < 5 then return nil end
-
     if getgc then
         pcall(function()
             for _, v in pairs(getgc(true)) do
@@ -32,9 +90,7 @@ local function findP()
             end
         end)
     end
-
     if _p then _findPFailedAt = nil; return _p end
-
     if debug and debug.getregistry then
         pcall(function()
             for _, fn in pairs(debug.getregistry()) do
@@ -42,169 +98,102 @@ local function findP()
                     pcall(function()
                         local upvals = getupvalues and getupvalues(fn) or debug.getupvalues(fn)
                         for _, uv in pairs(upvals) do
-                            if typeof(uv) == "table" and rawget(uv, "Utilities") then
-                                _p = uv
-                            end
+                            if typeof(uv) == "table" and rawget(uv, "Utilities") then _p = uv end
                         end
                     end)
                 end
             end
         end)
     end
-
     if _p then _findPFailedAt = nil else _findPFailedAt = os.clock() end
     return _p
 end
 
-local function getP()
-    if type(_p) ~= "table" or not rawget(_p, "Utilities") then
-        _p = findP()
-    end
-    return _p
-end
-
--- ─────────────────────────────────────────────────────────────────────────────
--- Helpers
--- ─────────────────────────────────────────────────────────────────────────────
-
-local function safeGet(obj, key)
-    if type(obj) ~= "table" then return nil end
-    local ok, v = pcall(function() return obj[key] end)
-    return ok and v or nil
-end
-
-local function getCurrentBattle()
-    local p = getP()
-    if type(p) ~= "table" then return nil end
-    -- MrJack uses u5.Battle.currentBattle directly
-    local battleModule = safeGet(p, "Battle")
-    local battle = safeGet(battleModule, "currentBattle")
-    if type(battle) == "table" then return battle end
-    -- Fallback: BattleClient
-    local clientModule = safeGet(p, "BattleClient")
-    return safeGet(clientModule, "currentBattle")
-end
-
--- Skips in-battle NPC/trainer text (NPCChat flags + advance methods).
 local function skipBattleText()
-    local p    = getP()
-    local chat = type(p) == "table" and safeGet(p, "NPCChat") or nil
+    local p = _p or findP()
+    if type(p) ~= "table" then return end
+    local chat = rawget(p, "NPCChat")
     if type(chat) ~= "table" then return end
-
     pcall(function()
         chat.fastForward        = true
         chat.skipping           = true
         chat.TextSpeedMultiplier = 100
     end)
-
-    for _, name in ipairs({
-        "manualAdvance", "ManualAdvance",
-        "advance",       "Advance",
-        "next",          "Next",
-        "skip",          "Skip",
-        "finish",        "Finish",
-        "continue",      "Continue",
-    }) do
+    for _, name in ipairs({ "manualAdvance", "advance", "next", "skip", "finish", "continue" }) do
         local m = rawget(chat, name)
         if type(m) == "function" then pcall(m, chat) end
     end
-
-    pcall(function()
-        if type(chat.isChatting) == "function" and chat:isChatting()
-            and type(chat.clear) == "function"
-        then
-            chat:clear()
-        end
-    end)
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Exact MrJack u37: fire move slot via BattleGui with energy/rest logic.
--- switchingBlocked mirrors MrJack's u7 flag (set during monster switch anim).
+-- Core battle loop — fires when BattleGui appears in MainGui
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local switchingBlocked = false
+local FIGHT_BUTTON_COLOR = Color3.fromRGB(255, 102, 102)
 
-local function fireMove(slot)
-    local p = getP()
-    if type(p) ~= "table" then return end
+local function runBattleLoop(battleGui)
+    local mainGui = playerGui:FindFirstChild("MainGui")
+    print("[Battle] BattleGui detected — auto-battle started.")
 
-    local battle    = getCurrentBattle()
-    local battleGui = safeGet(p, "BattleGui")
-    if type(battle) ~= "table" or type(battleGui) ~= "table" then return end
+    while mainGui and mainGui:FindFirstChild("BattleGui") do
+        skipBattleText()
 
-    local state = safeGet(battle, "state")
-    if state ~= "input" or switchingBlocked then return end
+        -- Click the red Fight button to open the move list
+        local fightButton = findButton(battleGui, { color = FIGHT_BUTTON_COLOR })
+        if fightButton then
+            click(fightButton, 0.5, 0.5)
+        end
 
-    -- Open fight menu if not already open (mainButtonClicked(1))
-    if not safeGet(battleGui, "onMoveClicked") then
-        pcall(function() battleGui:mainButtonClicked(1) end)
+        task.wait(0.3)
+
+        -- Click Move1's button
+        local move1Container = battleGui:FindFirstChild("Move1")
+        if move1Container then
+            local move1Button = move1Container:FindFirstChild("Button")
+            if move1Button then
+                click(move1Button, 0.5, 0.5)
+            end
+        end
+
+        task.wait(0.3)
     end
 
-    -- Inspect the move at this slot
-    local moves = safeGet(battleGui, "moves")
-    local move  = type(moves) == "table" and moves[slot] or nil
-    if type(move) ~= "table" then return end
-
-    local activeMonster = safeGet(battleGui, "activeMonster")
-    local energy        = activeMonster and safeGet(activeMonster, "energy") or math.huge
-    local bypassEnergy  = activeMonster and safeGet(activeMonster, "bypassEnergy") or false
-    local moveEnergy    = safeGet(move, "energy")
-    local disabled      = safeGet(move, "disabled")
-
-    if moveEnergy and energy < moveEnergy and not bypassEnergy then
-        -- Not enough energy → rest instead (exact MrJack path)
-        pcall(function()
-            local fsg = safeGet(battleGui, "fightSelectionGroup")
-            if fsg then fsg:LoseFocus() end
-            local ev = safeGet(battleGui, "inputEvent")
-            if ev then ev:fire("rest 0") end
-            battleGui:exitButtonsMoveChosen()
-        end)
-    elseif not disabled then
-        pcall(function()
-            battleGui:onMoveClicked(slot)
-        end)
-    end
+    print("[Battle] BattleGui gone — battle ended.")
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Public API
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local running       = false
-local monitorThread = nil
-local MOVE_SLOT     = 1      -- always use move slot 1 for story battles
-local TICK_RATE     = 0.08   -- seconds between loop iterations
-local FIRE_COOLDOWN = 0.35   -- minimum seconds between move fires
+local running        = false
+local watcherThread  = nil
 
 function Battle.start()
     if running then return end
     running = true
+    findP()
 
-    getP()
+    local mainGui = playerGui:WaitForChild("MainGui", 30)
+    if not mainGui then
+        warn("[Battle] MainGui not found — auto-battle not started.")
+        return
+    end
 
-    monitorThread = task.spawn(function()
-        print("[Battle] Auto-battle started (move slot " .. MOVE_SLOT .. ").")
+    watcherThread = task.spawn(function()
+        print("[Battle] Watching for BattleGui...")
 
-        local lastFireAt = 0
-
-        while running do
-            local battle = getCurrentBattle()
-
-            if type(battle) == "table" then
-                skipBattleText()
-
-                if os.clock() - lastFireAt > FIRE_COOLDOWN then
-                    fireMove(MOVE_SLOT)
-                    lastFireAt = os.clock()
-                end
+        -- Wire up the DescendantAdded listener (exact pattern from source)
+        mainGui.DescendantAdded:Connect(function(child)
+            if child.Name == "BattleGui" and running then
+                task.spawn(runBattleLoop, child)
             end
+        end)
 
-            task.wait(TICK_RATE)
+        -- Also handle a BattleGui that's already present when start() is called
+        local existing = mainGui:FindFirstChild("BattleGui")
+        if existing then
+            task.spawn(runBattleLoop, existing)
         end
-
-        print("[Battle] Auto-battle stopped.")
     end)
 end
 
@@ -213,13 +202,14 @@ function Battle.stop()
     print("[Battle] Stopped.")
 end
 
--- Blocks until no battle is active or timeout (seconds) is reached.
+-- Blocks until BattleGui is gone from MainGui, or timeout is reached.
 function Battle.waitForEnd(timeout)
     timeout = timeout or 120
     local deadline = tick() + timeout
+    local mainGui  = playerGui:FindFirstChild("MainGui")
 
     while tick() < deadline do
-        if not getCurrentBattle() then
+        if not (mainGui and mainGui:FindFirstChild("BattleGui")) then
             return true
         end
         RunService.Heartbeat:Wait()
@@ -229,17 +219,12 @@ function Battle.waitForEnd(timeout)
     return false
 end
 
--- One-shot: start auto-battle, block until finished, then stop.
+-- One-shot: start, wait for battle to end, stop.
 function Battle.runAndWait(timeout)
     Battle.start()
     local ok = Battle.waitForEnd(timeout or 120)
     Battle.stop()
     return ok
-end
-
--- Override which move slot to use (1-4).
-function Battle.setMoveSlot(slot)
-    MOVE_SLOT = slot or 1
 end
 
 return Battle

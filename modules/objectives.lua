@@ -219,14 +219,44 @@ end
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local lastTriggeredMatch = nil
+local autoHunting        = false   -- tracks whether Auto Hunt is currently active
+
+-- Toggles the Auto Hunt button in the game's UI (jackFunction pattern from source).
+local function toggleAutoHunt()
+    for _, desc in ipairs(playerGui:GetDescendants()) do
+        if desc.Name == "Toggle" and (desc:IsA("TextButton") or desc:IsA("ImageButton")) then
+            local cur = desc.Parent
+            while cur do
+                if cur.Name == "Auto Hunt" then
+                    if firesignal then
+                        pcall(function() firesignal(desc.Activated) end)
+                        pcall(function() firesignal(desc.MouseButton1Click) end)
+                    elseif getconnections then
+                        for _, c in ipairs(getconnections(desc.Activated))        do pcall(function() c:Fire() end) end
+                        for _, c in ipairs(getconnections(desc.MouseButton1Click)) do pcall(function() c:Fire() end) end
+                    end
+                    autoHunting = not autoHunting
+                    print("[Objectives] Auto Hunt toggled →", autoHunting)
+                    return
+                end
+                cur = cur.Parent
+            end
+        end
+    end
+end
 
 local function checkText(text)
     for _, objective in ipairs(ObjectiveConfig) do
         if containsSubstring(text, objective.match) then
+            -- Level guard: if too low, enable auto-hunt and skip teleport
             if objective.minLevel and currentLevel < objective.minLevel then
-                print("[Objectives] Level too low (" .. currentLevel .. "<" .. objective.minLevel .. ") for:", objective.match)
+                print("[Objectives] Level too low (" .. currentLevel .. " < " .. objective.minLevel .. ") for:", objective.match)
+                if not autoHunting then toggleAutoHunt() end
                 return
             end
+            -- If we were auto-hunting and now level is sufficient, stop it
+            if autoHunting then toggleAutoHunt() end
+
             if lastTriggeredMatch == objective.match then return end
             lastTriggeredMatch = objective.match
             print("[Objectives] Matched:", objective.match)
