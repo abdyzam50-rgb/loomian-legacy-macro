@@ -63,12 +63,8 @@ end
 
 print("\n[Main] ── Starting story sequence ──\n")
 
--- STEP 1: Floor 2 → Floor 1 (fires exit touch, waits for screen fade)
-print("[Main] Step 1: Floor 2 Exit")
-Movement.teleportFloor2Exit("Exit")
-
--- STEP 3: Cave entrance — nudges until the cutscene trigger fires, then waits for it to end
-print("[Main] Step 3: Teleporting to Cave entrance")
+-- STEP 1: Cave entrance — nudges until the cutscene trigger fires, then waits for it to end
+print("[Main] Step 1: Teleporting to Cave entrance")
 Movement.teleportToCave()
 waitForDialogue(8, 90)
 
