@@ -3,9 +3,7 @@
 -- Hooks every TextLabel inside BackGui; when the game's objective text
 -- changes to match a known entry in ObjectiveConfig, it auto-teleports
 -- through the configured waypoint sequence.
---
--- Also hooks RemoteEvents in ReplicatedStorage to extract the active
--- Loomian's level from network traffic (used by minLevel guards).
+-- Level data is sourced from _G.StarterLevel, written by battle.lua's EVT hooks.
 
 local Objectives = {}
 
@@ -111,15 +109,6 @@ Resolvers.idValue = function(wp)
     end
     warn("[Objectives] idValue: no StringValue 'id' containing:", wp.id)
     return nil
-end
-
-Resolvers.path = function(wp)
-    local current = Workspace
-    for _, seg in ipairs(wp.path) do
-        current = current and current:FindFirstChild(seg)
-        if not current then warn("[Objectives] path: failed at segment:", seg) return nil end
-    end
-    return getCFrameFromInstance(current)
 end
 
 Resolvers.gateMarquee = function(wp)

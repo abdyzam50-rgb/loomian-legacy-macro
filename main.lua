@@ -27,11 +27,7 @@ local Dialogue   = loadModule("dialogue")
 local Battle     = loadModule("battle")
 local Heal       = loadModule("heal")
 local Objectives = loadModule("objectives")
-local Utils      = loadModule("utils")
--- local Mom  = loadModule("mom")   -- wire in when ready
--- local Shop = loadModule("shop")  -- uncomment once shopId/itemId values are known
 
--- Let the movement module know how to check dialogue state for cave nudge detection.
 Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -63,22 +59,18 @@ end
 
 print("\n[Main] ── Starting story sequence ──\n")
 
--- STEP 1: Cave entrance — nudges until the cutscene trigger fires, then waits for it to end
-print("[Main] Step 1: Teleporting to Cave entrance")
+-- STEP 1: Cave entrance — nudges until the cutscene trigger fires
+print("[Main] Step 1: Cave entrance")
 Movement.teleportToCave()
 waitForDialogue(8, 90)
 
--- STEP 4: Lab door — cutscene starts, dialogue skipper handles it
-print("[Main] Step 4: Teleporting to Lab")
+-- STEP 2: Lab door — starter is given automatically through the cutscene
+print("[Main] Step 2: Lab")
 Movement.teleportToLab()
-waitForDialogue(8, 60)
+waitForDialogue(8, 90)
 
--- Starter is given automatically through the lab cutscene dialogue.
-print("[Main] Waiting for starter dialogue / pick sequence...")
-waitForDialogue(15, 90)
-
--- STEP 5: Post-lab battle (dialogue skipper + auto-battler handle this)
-print("[Main] Step 5: Waiting for post-lab battle to finish...")
+-- STEP 3: Post-lab battle
+print("[Main] Step 3: Waiting for post-lab battle to finish...")
 Battle.waitForEnd(180)
 
 print("[Main] Battle done. Waiting for any post-battle dialogue...")
