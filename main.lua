@@ -21,12 +21,14 @@ end
 -- Load modules
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local Movement = loadModule("movement")
-local Dialogue = loadModule("dialogue")
-local Battle   = loadModule("battle")
-local Heal     = loadModule("heal")
--- local Mom   = loadModule("mom")   -- placeholder: wire in when ready
--- local Shop  = loadModule("shop")  -- uncomment when shopId/itemId values known
+local Movement   = loadModule("movement")
+local Dialogue   = loadModule("dialogue")
+local Battle     = loadModule("battle")
+local Heal       = loadModule("heal")
+local Objectives = loadModule("objectives")
+local Utils      = loadModule("utils")    -- shared GUI helpers
+-- local Mom   = loadModule("mom")    -- placeholder: wire in when ready
+-- local Shop  = loadModule("shop")   -- uncomment when shopId/itemId values known
 
 -- Give movement module access to dialogue state for cave nudge detection.
 Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
@@ -38,6 +40,7 @@ Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
 Dialogue.start()
 Heal.start()
 Battle.start()
+Objectives.start()   -- hooks BackGui objective text + level tracker
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Helper: wait for dialogue to start then fully finish.

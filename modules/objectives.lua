@@ -1,0 +1,304 @@
+-- objectives.lua
+-- Reactive story-progression driver.
+-- Hooks every TextLabel inside BackGui; when the game's objective text
+-- changes to match a known entry in ObjectiveConfig, it auto-teleports
+-- through the configured waypoint sequence.
+--
+-- Also hooks RemoteEvents in ReplicatedStorage to extract the active
+-- Loomian's level from network traffic (used by minLevel guards).
+
+local Objectives = {}
+
+local Players           = game:GetService("Players")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local localPlayer = Players.LocalPlayer
+local playerGui   = localPlayer:WaitForChild("PlayerGui")
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Objective config
+-- Each entry:
+--   match    — case-insensitive substring of the objective TextLabel text
+--   minLevel — (optional) skip and toggle auto-hunt if level is below this
+--   sequence — ordered list of waypoints; each waypoint:
+--     { type = "workspaceName", name = "PartName" }
+--     { type = "idValue",       id = "SomeId", childName = "Main" }
+--     { type = "path",          path = {"Folder","Sub","Part"} }
+--     { type = "gateMarquee",   text = "DestinationName" }
+--     Any waypoint can also carry: delay = N  (seconds before next waypoint)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local ObjectiveConfig = {
+    {
+        match = "at the Dig Site",
+        sequence = {
+            { type = "workspaceName", name = "TriggerCaveCutscene" },
+        },
+    },
+    {
+        match = "at the Laboratory",
+        sequence = {
+            { type = "idValue", id = "Laboratory", childName = "Main" },
+        },
+    },
+    {
+        match = "Gale Forest",
+        sequence = {
+            { type = "workspaceName", name = "Exit" },
+            { type = "gateMarquee",   text = "Cheshma Town" },
+            { type = "workspaceName", name = "SchoolSceneTrigger" },
+        },
+    },
+    {
+        match = "behind Duskit",
+        minLevel = 13,
+        sequence = {
+            { type = "workspaceName", name = "DuskitCutsceneTrigger" },
+        },
+    },
+    {
+        match = "Silvent City Battle",
+        minLevel = 13,
+        sequence = {
+            { type = "gateMarquee", text = "Route 3" },
+        },
+    },
+}
+
+local DEFAULT_WAYPOINT_DELAY = 5
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Level tracker
+-- Hooks all RemoteEvents in ReplicatedStorage and scans payloads for the
+-- active Loomian's level (looks for "switch" + Loomian name pattern).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local currentLevel = _G.StarterLevel or 5
+local trackedName  = "Eaglit"   -- override via Objectives.setTrackedName()
+
+local function parseLevelFromTable(tbl)
+    if type(tbl) ~= "table" then return end
+    for _, val in pairs(tbl) do
+        if type(val) == "string" then
+            if val:find('"switch"') and val:find(trackedName) then
+                local lvl = val:match("L(%d+)")
+                if lvl then
+                    currentLevel = tonumber(lvl)
+                    _G.StarterLevel = currentLevel
+                    print("[Objectives] Level updated:", currentLevel)
+                    return true
+                end
+            end
+        elseif type(val) == "table" then
+            if parseLevelFromTable(val) then return true end
+        end
+    end
+end
+
+local hookedRemotes = {}
+local function hookRemote(remote)
+    if not remote:IsA("RemoteEvent") or hookedRemotes[remote] then return end
+    hookedRemotes[remote] = true
+    remote.OnClientEvent:Connect(function(...)
+        for _, arg in ipairs({...}) do
+            parseLevelFromTable(arg)
+        end
+    end)
+end
+
+local function startLevelTracker()
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do hookRemote(obj) end
+    ReplicatedStorage.DescendantAdded:Connect(hookRemote)
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Helpers
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function containsSubstring(haystack, needle)
+    if not haystack or not needle then return false end
+    return haystack:lower():find(needle:lower(), 1, true) ~= nil
+end
+
+local function getCFrameFromInstance(inst)
+    if not inst then return nil end
+    if inst:IsA("BasePart") then return inst.CFrame
+    elseif inst:IsA("Model") then return inst:GetPivot() end
+    return nil
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Waypoint resolvers
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local Resolvers = {}
+
+Resolvers.workspaceName = function(wp)
+    local inst = Workspace:FindFirstChild(wp.name, true)
+    if not inst then warn("[Objectives] workspaceName: not found:", wp.name) return nil end
+    return getCFrameFromInstance(inst)
+end
+
+Resolvers.idValue = function(wp)
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        if desc:IsA("StringValue") and desc.Name == "id" and containsSubstring(desc.Value, wp.id) then
+            local target = desc.Parent and desc.Parent:FindFirstChild(wp.childName)
+            if target then return getCFrameFromInstance(target) end
+            warn("[Objectives] idValue: id found but no child:", wp.childName)
+            return nil
+        end
+    end
+    warn("[Objectives] idValue: no StringValue 'id' containing:", wp.id)
+    return nil
+end
+
+Resolvers.path = function(wp)
+    local current = Workspace
+    for _, seg in ipairs(wp.path) do
+        current = current and current:FindFirstChild(seg)
+        if not current then warn("[Objectives] path: failed at segment:", seg) return nil end
+    end
+    return getCFrameFromInstance(current)
+end
+
+Resolvers.gateMarquee = function(wp)
+    for _, marquee in ipairs(Workspace:GetDescendants()) do
+        if marquee.Name == "Marquee" then
+            local mText = marquee:FindFirstChild("MText")
+            if mText and mText:IsA("StringValue") and containsSubstring(mText.Value, wp.text) then
+                if not marquee:IsA("BasePart") then
+                    warn("[Objectives] gateMarquee: Marquee is not a BasePart:", marquee:GetFullName())
+                    return nil
+                end
+                return CFrame.new(marquee.Position - Vector3.new(0, 10, 0))
+            end
+        end
+    end
+    warn("[Objectives] gateMarquee: no Marquee with MText containing:", wp.text)
+    return nil
+end
+
+local function resolveWaypoint(wp)
+    local resolver = Resolvers[wp.type]
+    if not resolver then warn("[Objectives] No resolver for type:", wp.type) return nil end
+    return resolver(wp)
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Teleport
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function teleportToCFrame(cf, label)
+    if not cf then warn("[Objectives] nil CFrame for:", label) return false end
+    local char = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+    local hrp  = char:WaitForChild("HumanoidRootPart")
+    hrp.CFrame = cf + Vector3.new(0, 3, 0)
+    print("[Objectives] Teleported to:", label)
+    return true
+end
+
+local function runSequence(sequence, matchText)
+    print("[Objectives] Running sequence for:", matchText, "(" .. #sequence .. " waypoint(s))")
+    for i, wp in ipairs(sequence) do
+        local label = matchText .. " [" .. i .. "/" .. #sequence .. "]"
+        local ok = teleportToCFrame(resolveWaypoint(wp), label)
+        if not ok then
+            warn("[Objectives] Sequence aborted at waypoint", i)
+            return
+        end
+        if i < #sequence then
+            task.wait(wp.delay or DEFAULT_WAYPOINT_DELAY)
+        end
+    end
+    print("[Objectives] Sequence complete:", matchText)
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- BackGui TextLabel watcher
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local lastTriggeredMatch = nil
+
+local function checkText(text)
+    for _, objective in ipairs(ObjectiveConfig) do
+        if containsSubstring(text, objective.match) then
+            if objective.minLevel and currentLevel < objective.minLevel then
+                print("[Objectives] Level too low (" .. currentLevel .. "<" .. objective.minLevel .. ") for:", objective.match)
+                return
+            end
+            if lastTriggeredMatch == objective.match then return end
+            lastTriggeredMatch = objective.match
+            print("[Objectives] Matched:", objective.match)
+            task.spawn(runSequence, objective.sequence, objective.match)
+            return
+        end
+    end
+end
+
+local function hookLabel(label)
+    checkText(label.Text)
+    label:GetPropertyChangedSignal("Text"):Connect(function()
+        checkText(label.Text)
+    end)
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Public API
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local running = false
+
+function Objectives.start()
+    if running then return end
+    running = true
+
+    startLevelTracker()
+
+    local backGui = playerGui:WaitForChild("BackGui", 30)
+    if not backGui then
+        warn("[Objectives] BackGui not found — objective watcher not started.")
+        return
+    end
+
+    local count = 0
+    for _, obj in ipairs(backGui:GetDescendants()) do
+        if obj:IsA("TextLabel") then
+            hookLabel(obj)
+            count += 1
+        end
+    end
+    print("[Objectives] Hooked " .. count .. " TextLabel(s) in BackGui.")
+
+    backGui.DescendantAdded:Connect(function(obj)
+        if obj:IsA("TextLabel") then hookLabel(obj) end
+    end)
+end
+
+function Objectives.stop()
+    running = false
+    print("[Objectives] Stopped.")
+end
+
+-- Add or overwrite an objective entry at runtime.
+function Objectives.addObjective(config)
+    table.insert(ObjectiveConfig, config)
+    print("[Objectives] Added objective:", config.match)
+end
+
+-- Reset the debounce so the same objective can retrigger.
+function Objectives.resetMatch()
+    lastTriggeredMatch = nil
+end
+
+-- Override which Loomian name the level tracker looks for.
+function Objectives.setTrackedName(name)
+    trackedName = name
+    print("[Objectives] Tracking level for:", name)
+end
+
+function Objectives.getLevel()
+    return currentLevel
+end
+
+return Objectives
