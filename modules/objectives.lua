@@ -152,7 +152,7 @@ local STARTER_WAIT_TIMEOUT  = 120  -- give up after 2 minutes
 -- Target arrow color (gray) and tolerance
 local ARROW_R, ARROW_G, ARROW_B = 160, 155, 150
 local ARROW_TOLERANCE = 40
-local STARTER_MAX_CYCLES = 20
+local STARTER_MAX_CYCLES = 50
 
 local _dialogueModule = nil
 
