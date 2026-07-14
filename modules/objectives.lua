@@ -158,8 +158,9 @@ local _dialogueModule = nil
 
 local function vim_click(x, y)
     VirtualInputManager:SendMouseButtonEvent(x, y, 0, true,  game, 0)
-    task.wait(0.05)
+    task.wait(0.2)
     VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    task.wait(0.3)  -- debounce: let UI settle before next input
 end
 
 local function pixelMatchesArrow(x, y)
