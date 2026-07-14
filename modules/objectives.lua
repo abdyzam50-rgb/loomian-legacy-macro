@@ -194,20 +194,23 @@ local function runStarterPick()
     print("[Objectives] Starter picker: gap detected — pausing dialogue skipper.")
     if _dialogueModule then _dialogueModule.pause() end
 
-    -- Wait for screen to fully render before first pixel read
+    -- Wait for screen to fully render
     task.wait(2)
-    for i = 1, STARTER_MAX_CYCLES do
-        -- Read the dedicated colour-check spot twice with a short gap
-        local match1 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
-        task.wait(0.1)
-        local match2 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
-        if match1 and match2 then
-            print("[Objectives] Starter picker: colour confirmed at cycle " .. i)
-            break
+    if readpixel then
+        for i = 1, STARTER_MAX_CYCLES do
+            local match1 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
+            task.wait(0.1)
+            local match2 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
+            if match1 and match2 then
+                print("[Objectives] Starter picker: colour confirmed at cycle " .. i)
+                break
+            end
+            print("[Objectives] Starter picker: cycling arrow (attempt " .. i .. ")")
+            vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)
+            task.wait(1)
         end
-        print("[Objectives] Starter picker: cycling arrow (attempt " .. i .. ")")
-        vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)
-        task.wait(1)
+    else
+        print("[Objectives] Starter picker: readpixel unavailable — picking current starter.")
     end
 
     vim_click_once(STARTER_SELECT_X, STARTER_SELECT_Y)
