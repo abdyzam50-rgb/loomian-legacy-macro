@@ -34,6 +34,7 @@ local Trainer    = loadModule("trainer")
 local Objectives = loadModule("objectives")
 
 Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
+Objectives.setDialogueModule(Dialogue)
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Start background monitors (run for the entire session)

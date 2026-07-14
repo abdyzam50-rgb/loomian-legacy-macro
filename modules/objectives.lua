@@ -139,18 +139,18 @@ Resolvers.gateMarquee = function(wp)
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Starter picker — VIM-based click sequence with pixel-color cycling.
--- Clicks the arrow at (206,272) until the pixel there turns the arrow's gray,
--- then clicks select (672,445) and confirm (824,194).
+-- Starter picker — waits for 6s of dialogue silence, pauses the dialogue
+-- skipper, clicks through the selection screen (1s between each step),
+-- then resumes the skipper so battle + post-battle dialogue auto-clear.
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local STARTER_ARROW_X,  STARTER_ARROW_Y  = 206, 272
-local STARTER_SELECT_X, STARTER_SELECT_Y = 672, 445
-local STARTER_CONFIRM_X,STARTER_CONFIRM_Y= 824, 194
--- Approximate gray of the navigation arrow button (R≈160 G≈155 B≈150).
-local ARROW_R, ARROW_G, ARROW_B = 160, 155, 150
-local ARROW_TOLERANCE = 40
-local STARTER_MAX_CYCLES = 10
+local STARTER_ARROW_X,   STARTER_ARROW_Y   = 206, 272
+local STARTER_SELECT_X,  STARTER_SELECT_Y  = 672, 445
+local STARTER_CONFIRM_X, STARTER_CONFIRM_Y = 824, 194
+local STARTER_DIALOGUE_GAP  = 6    -- seconds of silence before picking
+local STARTER_WAIT_TIMEOUT  = 120  -- give up after 2 minutes
+
+local _dialogueModule = nil
 
 local function vim_click(x, y)
     VirtualInputManager:SendMouseButtonEvent(x, y, 0, true,  game, 0)
@@ -158,39 +158,31 @@ local function vim_click(x, y)
     VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
 end
 
-local function pixelMatchesArrow(x, y)
-    -- Try executor readpixel (returns r, g, b as 0-255 integers)
-    if readpixel then
-        local ok, r, g, b = pcall(readpixel, x, y)
-        if ok and r then
-            return math.abs(r - ARROW_R) <= ARROW_TOLERANCE
-                and math.abs(g - ARROW_G) <= ARROW_TOLERANCE
-                and math.abs(b - ARROW_B) <= ARROW_TOLERANCE
-        end
-    end
-    -- No pixel API available — skip color check, just cycle once
-    return true
-end
-
 local function runStarterPick()
-    print("[Objectives] Starter picker: cycling to arrow color then selecting.")
-    task.wait(1.5)  -- wait for starter screen to fully appear
+    print("[Objectives] Starter picker: waiting for " .. STARTER_DIALOGUE_GAP .. "s dialogue gap...")
 
-    for i = 1, STARTER_MAX_CYCLES do
-        if pixelMatchesArrow(STARTER_ARROW_X, STARTER_ARROW_Y) then
-            print("[Objectives] Starter picker: arrow color matched at cycle " .. i)
-            break
-        end
-        vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)
-        task.wait(0.5)
+    local deadline = tick() + STARTER_WAIT_TIMEOUT
+    while tick() < deadline do
+        local gap = _dialogueModule and _dialogueModule.secondsSinceLastChat() or math.huge
+        if gap >= STARTER_DIALOGUE_GAP then break end
+        task.wait(0.2)
     end
 
-    task.wait(0.3)
-    vim_click(STARTER_SELECT_X, STARTER_SELECT_Y)
-    print("[Objectives] Starter picker: selected.")
-    task.wait(0.5)
-    vim_click(STARTER_CONFIRM_X, STARTER_CONFIRM_Y)
-    print("[Objectives] Starter picker: confirmed.")
+    print("[Objectives] Starter picker: gap detected — pausing dialogue skipper.")
+    if _dialogueModule then _dialogueModule.pause() end
+
+    task.wait(1)
+    vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)   -- cycle to desired starter
+    task.wait(1)
+    vim_click(STARTER_SELECT_X, STARTER_SELECT_Y)  -- select
+    task.wait(1)
+    vim_click(STARTER_CONFIRM_X, STARTER_CONFIRM_Y) -- confirm
+    task.wait(1)
+
+    print("[Objectives] Starter picker: done — resuming dialogue skipper.")
+    if _dialogueModule then _dialogueModule.resume() end
+    -- dialogue.lua + battle.lua now handle post-pick dialogue and tutorial battle.
+    -- Objectives watcher handles the next-area transition when objective text changes.
 end
 
 -- starterPick is handled inline in runSequence (not via resolveWaypoint)
@@ -367,6 +359,10 @@ function Objectives.start()
     backGui.DescendantAdded:Connect(function(obj)
         if obj:IsA("TextLabel") then hookLabel(obj) end
     end)
+end
+
+function Objectives.setDialogueModule(d)
+    _dialogueModule = d
 end
 
 function Objectives.stop()

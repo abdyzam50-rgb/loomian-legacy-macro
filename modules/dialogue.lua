@@ -231,7 +231,9 @@ function Dialogue.waitForEnd(timeout)
 end
 
 local running       = false
+local paused        = false
 local monitorThread = nil
+local lastChattingAt = 0  -- tick() of the last frame where isChatting() was true
 
 function Dialogue.start()
     if running then return end
@@ -245,7 +247,10 @@ function Dialogue.start()
 
         while running do
             if isChatting() then
-                skipCurrent()
+                lastChattingAt = tick()
+                if not paused then
+                    skipCurrent()
+                end
                 RunService.RenderStepped:Wait()
             else
                 task.wait(0.05)
@@ -259,6 +264,22 @@ end
 function Dialogue.stop()
     running = false
     print("[Dialogue] Stopped.")
+end
+
+function Dialogue.pause()
+    paused = true
+    print("[Dialogue] Skipper paused.")
+end
+
+function Dialogue.resume()
+    paused = false
+    print("[Dialogue] Skipper resumed.")
+end
+
+-- Seconds since NPC dialogue was last detected (0 if currently chatting).
+function Dialogue.secondsSinceLastChat()
+    if lastChattingAt == 0 then return math.huge end
+    return tick() - lastChattingAt
 end
 
 -- One-shot: skip whatever dialogue is active right now.
