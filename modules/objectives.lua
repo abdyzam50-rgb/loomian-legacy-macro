@@ -11,11 +11,13 @@
 --   { type = "gateMarquee",   text = "DestinationName" }
 --   { type = "levelGate",     minLevel = N }   ← blocks until level met,
 --       re-anchors player to last position every 15s if they drift (blackout)
+--   { type = "starterPick" }  ← clicks through starter selection screen via VIM
 
 local Objectives = {}
 
-local Players   = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
+local Players             = game:GetService("Players")
+local Workspace           = game:GetService("Workspace")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local localPlayer = Players.LocalPlayer
 local playerGui   = localPlayer:WaitForChild("PlayerGui")
@@ -34,7 +36,8 @@ local ObjectiveConfig = {
     {
         match = "at the Laboratory",
         sequence = {
-            { type = "idValue", id = "Laboratory", childName = "Main" },
+            { type = "idValue",    id = "Laboratory", childName = "Main" },
+            { type = "starterPick" },
         },
     },
     {
@@ -135,6 +138,62 @@ Resolvers.gateMarquee = function(wp)
     return nil
 end
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Starter picker — VIM-based click sequence with pixel-color cycling.
+-- Clicks the arrow at (206,272) until the pixel there turns the arrow's gray,
+-- then clicks select (672,445) and confirm (824,194).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local STARTER_ARROW_X,  STARTER_ARROW_Y  = 206, 272
+local STARTER_SELECT_X, STARTER_SELECT_Y = 672, 445
+local STARTER_CONFIRM_X,STARTER_CONFIRM_Y= 824, 194
+-- Approximate gray of the navigation arrow button (R≈160 G≈155 B≈150).
+local ARROW_R, ARROW_G, ARROW_B = 160, 155, 150
+local ARROW_TOLERANCE = 40
+local STARTER_MAX_CYCLES = 10
+
+local function vim_click(x, y)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true,  game, 0)
+    task.wait(0.05)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+end
+
+local function pixelMatchesArrow(x, y)
+    -- Try executor readpixel (returns r, g, b as 0-255 integers)
+    if readpixel then
+        local ok, r, g, b = pcall(readpixel, x, y)
+        if ok and r then
+            return math.abs(r - ARROW_R) <= ARROW_TOLERANCE
+                and math.abs(g - ARROW_G) <= ARROW_TOLERANCE
+                and math.abs(b - ARROW_B) <= ARROW_TOLERANCE
+        end
+    end
+    -- No pixel API available — skip color check, just cycle once
+    return true
+end
+
+local function runStarterPick()
+    print("[Objectives] Starter picker: cycling to arrow color then selecting.")
+    task.wait(1.5)  -- wait for starter screen to fully appear
+
+    for i = 1, STARTER_MAX_CYCLES do
+        if pixelMatchesArrow(STARTER_ARROW_X, STARTER_ARROW_Y) then
+            print("[Objectives] Starter picker: arrow color matched at cycle " .. i)
+            break
+        end
+        vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)
+        task.wait(0.5)
+    end
+
+    task.wait(0.3)
+    vim_click(STARTER_SELECT_X, STARTER_SELECT_Y)
+    print("[Objectives] Starter picker: selected.")
+    task.wait(0.5)
+    vim_click(STARTER_CONFIRM_X, STARTER_CONFIRM_Y)
+    print("[Objectives] Starter picker: confirmed.")
+end
+
+-- starterPick is handled inline in runSequence (not via resolveWaypoint)
 local function resolveWaypoint(wp)
     local resolver = Resolvers[wp.type]
     if not resolver then warn("[Objectives] No resolver for type:", wp.type) return nil end
@@ -205,7 +264,8 @@ local function runSequence(sequence, matchText)
     for i, wp in ipairs(sequence) do
         if wp.type == "levelGate" then
             runLevelGate(wp.minLevel, lastCFrame)
-            -- no teleport — just wait then continue to next waypoint
+        elseif wp.type == "starterPick" then
+            runStarterPick()
         else
             local label = matchText .. " [" .. i .. "/" .. #sequence .. "]"
             local cf = resolveWaypoint(wp)
