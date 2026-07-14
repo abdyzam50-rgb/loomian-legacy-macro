@@ -169,37 +169,41 @@ local function vim_click_once(x, y)
     task.wait(0.3)
 end
 
--- Returns r,g,b (0-255) at screen position using readpixel if available,
--- otherwise reads the topmost visible GUI element's BackgroundColor3.
+-- Returns r,g,b (0-255) at screen position.
+-- Uses readpixel if available; otherwise collects every visible GuiObject
+-- that contains (x,y), sorts by ZIndex descending, and reads the top layer's
+-- BackgroundColor3 — skipping any ScreenGui with DisplayOrder >= 99999
+-- (executor overlays / scanner tools).
 local function sampleColor(x, y)
     if readpixel then
         local ok, r, g, b = pcall(readpixel, x, y)
         if ok and r then return r, g, b end
     end
-    -- GUI element fallback: find topmost visible non-transparent game element at (x,y).
-    -- Skip any ScreenGui with DisplayOrder >= 99999 (executor overlays / scanner tools).
-    local best, bestZ = nil, -math.huge
-    local function scan(obj)
+
+    local layers = {}
+    local function checkDescendants(obj)
         for _, child in ipairs(obj:GetChildren()) do
-            -- Skip high-DisplayOrder overlays injected by executors
             if child:IsA("ScreenGui") and (child.DisplayOrder or 0) >= 99999 then
-                -- don't recurse into overlay guis
+                -- skip executor overlay guis entirely
             elseif child:IsA("GuiObject") and child.Visible and child.BackgroundTransparency < 1 then
                 local ap = child.AbsolutePosition
                 local as = child.AbsoluteSize
                 if x >= ap.X and x <= ap.X + as.X and y >= ap.Y and y <= ap.Y + as.Y then
-                    local z = child.ZIndex or 1
-                    if z > bestZ then bestZ = z; best = child end
+                    table.insert(layers, child)
                 end
-                scan(child)
+                checkDescendants(child)
             else
-                scan(child)
+                checkDescendants(child)
             end
         end
     end
-    scan(playerGui)
-    if best then
-        local c = best.BackgroundColor3
+    checkDescendants(playerGui)
+
+    table.sort(layers, function(a, b) return (a.ZIndex or 1) > (b.ZIndex or 1) end)
+
+    local top = layers[1]
+    if top then
+        local c = top.BackgroundColor3
         return math.round(c.R*255), math.round(c.G*255), math.round(c.B*255)
     end
     return nil, nil, nil
