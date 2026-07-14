@@ -344,9 +344,9 @@ local function getAllTrainers()
         local numId = tonumber(id)
         if numId and type(trainerData) == "table" then
             -- Skip permanently fought one-time trainers
-            if hasFought(numId) then goto continue end
+            if hasFought(numId) then continue end
             -- Skip trainers that are currently too strong
-            if isTooStrong(numId) then goto continue end
+            if isTooStrong(numId) then continue end
 
             local npc = npcByBattleId[numId]
             table.insert(result, {
@@ -355,7 +355,6 @@ local function getAllTrainers()
                 npc         = npc,
                 position    = getNPCPosition(npc),
             })
-            ::continue::
         end
     end
     return result
