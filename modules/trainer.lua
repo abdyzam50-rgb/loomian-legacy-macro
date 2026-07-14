@@ -2,12 +2,68 @@
 -- Scans the current chunk for all trainers, teleports to the closest one,
 -- fights them via BattleClient:doTrainerBattle, waits for the battle to end,
 -- then waits for heal to complete before repeating.
+-- One-time trainers are tracked in a Workspace folder and skipped after defeat.
+-- Repeatable trainers (e.g. id 69) are never skipped.
 
 local Trainer = {}
 
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local Workspace  = game:GetService("Workspace")
 local localPlayer = Players.LocalPlayer
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Trainer 69 is the known repeatable trainer — add others here if discovered
+-- ─────────────────────────────────────────────────────────────────────────────
+local REPEATABLE = { [69] = true }
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Fought-trainer tracking — persisted to a Workspace folder this session
+-- ─────────────────────────────────────────────────────────────────────────────
+local FOLDER_NAME = "MacroFoughtTrainers"
+
+local function getFoughtFolder()
+    local folder = Workspace:FindFirstChild(FOLDER_NAME)
+    if not folder then
+        folder = Instance.new("Folder")
+        folder.Name = FOLDER_NAME
+        folder.Parent = Workspace
+    end
+    return folder
+end
+
+local function loadFoughtFromWorkspace()
+    local fought = {}
+    local folder = Workspace:FindFirstChild(FOLDER_NAME)
+    if folder then
+        for _, v in ipairs(folder:GetChildren()) do
+            local id = tonumber(v.Name)
+            if id then fought[id] = true end
+        end
+    end
+    return fought
+end
+
+local foughtTrainers = loadFoughtFromWorkspace()
+
+local function markFought(id)
+    if REPEATABLE[id] then return end  -- never mark repeatable trainers
+    foughtTrainers[id] = true
+    -- Persist to workspace folder
+    local folder = getFoughtFolder()
+    if not folder:FindFirstChild(tostring(id)) then
+        local tag = Instance.new("BoolValue")
+        tag.Name  = tostring(id)
+        tag.Value = true
+        tag.Parent = folder
+    end
+    print("[Trainer] Marked trainer " .. id .. " as fought (one-time).")
+end
+
+local function hasFought(id)
+    if REPEATABLE[id] then return false end
+    return foughtTrainers[id] == true
+end
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- _p shared cache
@@ -186,7 +242,7 @@ local function getAllTrainers()
     local result = {}
     for id, trainerData in pairs(battles) do
         local numId = tonumber(id)
-        if numId and type(trainerData) == "table" then
+        if numId and type(trainerData) == "table" and not hasFought(numId) then
             local npc = npcByBattleId[numId]
             local pos = getNPCPosition(npc)
             table.insert(result, {
@@ -364,6 +420,7 @@ function Trainer.start()
                         print("[Trainer] Battle started vs trainer " .. trainer.id .. " — waiting for end...")
                         waitForBattleEnd(300)
                         skipNpcText()
+                        markFought(trainer.id)
                         -- Let heal module do its job, then confirm full health before next fight
                         print("[Trainer] Battle done — waiting for full health...")
                         waitForFullHealth(30)
@@ -395,12 +452,27 @@ end
 function Trainer.listTrainers()
     local trainers = getAllTrainers()
     local playerPos = getPlayerPosition()
-    print("[Trainer] Found " .. #trainers .. " trainer(s) in chunk:")
+    print("[Trainer] Found " .. #trainers .. " available trainer(s) in chunk:")
     for _, t in ipairs(trainers) do
         local dist = (playerPos and t.position) and
             string.format("%.1f studs", (t.position - playerPos).Magnitude) or "unknown dist"
-        print(string.format("  id=%-4d  %s  hasNPC=%s", t.id, dist, tostring(t.npc ~= nil)))
+        local tag = REPEATABLE[t.id] and " [REPEATABLE]" or ""
+        print(string.format("  id=%-4d  %s%s  hasNPC=%s", t.id, dist, tag, tostring(t.npc ~= nil)))
     end
+end
+
+-- Clear the fought list (resets all one-time trainers for a fresh run)
+function Trainer.clearFought()
+    foughtTrainers = {}
+    local folder = Workspace:FindFirstChild(FOLDER_NAME)
+    if folder then folder:Destroy() end
+    print("[Trainer] Fought trainer list cleared.")
+end
+
+-- Mark a trainer ID as repeatable at runtime
+function Trainer.addRepeatable(id)
+    REPEATABLE[tonumber(id)] = true
+    print("[Trainer] Trainer " .. tostring(id) .. " marked as repeatable.")
 end
 
 return Trainer
