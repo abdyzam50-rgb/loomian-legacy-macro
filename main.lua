@@ -27,6 +27,7 @@ local Dialogue   = loadModule("dialogue")
 local Battle     = loadModule("battle")
 local Heal       = loadModule("heal")
 local Shop       = loadModule("shop")
+local Trainer    = loadModule("trainer")
 local Objectives = loadModule("objectives")
 
 Movement.setDialogueCheck(function() return Dialogue.isChatting() end)
