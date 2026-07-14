@@ -149,6 +149,10 @@ local STARTER_SELECT_X,  STARTER_SELECT_Y  = 672, 445
 local STARTER_CONFIRM_X, STARTER_CONFIRM_Y = 824, 194
 local STARTER_DIALOGUE_GAP  = 60   -- seconds of silence before picking
 local STARTER_WAIT_TIMEOUT  = 120  -- give up after 2 minutes
+-- Target arrow color (gray) and tolerance
+local ARROW_R, ARROW_G, ARROW_B = 160, 155, 150
+local ARROW_TOLERANCE = 40
+local STARTER_MAX_CYCLES = 20
 
 local _dialogueModule = nil
 
@@ -156,6 +160,18 @@ local function vim_click(x, y)
     VirtualInputManager:SendMouseButtonEvent(x, y, 0, true,  game, 0)
     task.wait(0.05)
     VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+end
+
+local function pixelMatchesArrow(x, y)
+    if readpixel then
+        local ok, r, g, b = pcall(readpixel, x, y)
+        if ok and r then
+            return math.abs(r - ARROW_R) <= ARROW_TOLERANCE
+                and math.abs(g - ARROW_G) <= ARROW_TOLERANCE
+                and math.abs(b - ARROW_B) <= ARROW_TOLERANCE
+        end
+    end
+    return false  -- no readpixel: never stop early, rely on max cycles
 end
 
 local function runStarterPick()
@@ -171,18 +187,27 @@ local function runStarterPick()
     print("[Objectives] Starter picker: gap detected — pausing dialogue skipper.")
     if _dialogueModule then _dialogueModule.pause() end
 
+    -- Cycle arrow until pixel matches arrow color (or max cycles reached)
     task.wait(1)
-    vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)   -- cycle to desired starter
+    for i = 1, STARTER_MAX_CYCLES do
+        if pixelMatchesArrow(STARTER_ARROW_X, STARTER_ARROW_Y) then
+            print("[Objectives] Starter picker: arrow color matched at cycle " .. i)
+            break
+        end
+        print("[Objectives] Starter picker: cycling arrow (attempt " .. i .. ")")
+        vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)
+        task.wait(1)
+    end
+
+    vim_click(STARTER_SELECT_X, STARTER_SELECT_Y)
+    print("[Objectives] Starter picker: selected.")
     task.wait(1)
-    vim_click(STARTER_SELECT_X, STARTER_SELECT_Y)  -- select
-    task.wait(1)
-    vim_click(STARTER_CONFIRM_X, STARTER_CONFIRM_Y) -- confirm
+    vim_click(STARTER_CONFIRM_X, STARTER_CONFIRM_Y)
+    print("[Objectives] Starter picker: confirmed.")
     task.wait(1)
 
     print("[Objectives] Starter picker: done — resuming dialogue skipper.")
     if _dialogueModule then _dialogueModule.resume() end
-    -- dialogue.lua + battle.lua now handle post-pick dialogue and tutorial battle.
-    -- Objectives watcher handles the next-area transition when objective text changes.
 end
 
 -- starterPick is handled inline in runSequence (not via resolveWaypoint)
