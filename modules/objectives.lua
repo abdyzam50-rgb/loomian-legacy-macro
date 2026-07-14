@@ -4,6 +4,13 @@
 -- changes to match a known entry in ObjectiveConfig, it auto-teleports
 -- through the configured waypoint sequence.
 -- Level data is sourced from _G.StarterLevel, written by battle.lua's EVT hooks.
+--
+-- Waypoint types:
+--   { type = "workspaceName", name = "PartName" }
+--   { type = "idValue",       id = "SomeId", childName = "Main" }
+--   { type = "gateMarquee",   text = "DestinationName" }
+--   { type = "levelGate",     minLevel = N }   ← blocks until level met,
+--       re-anchors player to last position every 15s if they drift (blackout)
 
 local Objectives = {}
 
@@ -15,15 +22,6 @@ local playerGui   = localPlayer:WaitForChild("PlayerGui")
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Objective config
--- Each entry:
---   match    — case-insensitive substring of the objective TextLabel text
---   minLevel — (optional) skip and toggle auto-hunt if level is below this
---   sequence — ordered list of waypoints; each waypoint:
---     { type = "workspaceName", name = "PartName" }
---     { type = "idValue",       id = "SomeId", childName = "Main" }
---     { type = "path",          path = {"Folder","Sub","Part"} }
---     { type = "gateMarquee",   text = "DestinationName" }
---     Any waypoint can also carry: delay = N  (seconds before next waypoint)
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local ObjectiveConfig = {
@@ -40,32 +38,36 @@ local ObjectiveConfig = {
         },
     },
     {
+        -- Teleport to Gale Forest, grind to lv 12 there, then trigger Duskit
         match = "Gale Forest",
         sequence = {
             { type = "workspaceName", name = "Exit" },
             { type = "gateMarquee",   text = "Cheshma Town" },
             { type = "workspaceName", name = "SchoolSceneTrigger" },
+            { type = "levelGate",     minLevel = 12 },
+            { type = "workspaceName", name = "DuskitCutsceneTrigger" },
         },
     },
     {
+        -- Fallback: if script starts mid-story at this point
         match = "behind Duskit",
-        minLevel = 13,
+        minLevel = 12,
         sequence = {
             { type = "workspaceName", name = "DuskitCutsceneTrigger" },
         },
     },
     {
+        -- Teleport to Route 3, grind to lv 20 there, then done
         match = "Silvent City Battle",
-        minLevel = 13,
         sequence = {
             { type = "gateMarquee", text = "Route 3" },
+            { type = "levelGate",   minLevel = 20 },
         },
     },
 }
 
 local DEFAULT_WAYPOINT_DELAY = 5
 
--- Level is tracked by battle.lua via EVT packet hooks and written to _G.StarterLevel.
 local function currentLevel()
     return _G.StarterLevel or 5
 end
@@ -84,6 +86,11 @@ local function getCFrameFromInstance(inst)
     if inst:IsA("BasePart") then return inst.CFrame
     elseif inst:IsA("Model") then return inst:GetPivot() end
     return nil
+end
+
+local function getHRP()
+    local char = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+    return char:WaitForChild("HumanoidRootPart")
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -140,26 +147,80 @@ end
 
 local function teleportToCFrame(cf, label)
     if not cf then warn("[Objectives] nil CFrame for:", label) return false end
-    local char = localPlayer.Character or localPlayer.CharacterAdded:Wait()
-    local hrp  = char:WaitForChild("HumanoidRootPart")
+    local hrp = getHRP()
     hrp.CFrame = cf + Vector3.new(0, 3, 0)
     print("[Objectives] Teleported to:", label)
     return true
 end
 
-local function runSequence(sequence, matchText)
-    print("[Objectives] Running sequence for:", matchText, "(" .. #sequence .. " waypoint(s))")
-    for i, wp in ipairs(sequence) do
-        local label = matchText .. " [" .. i .. "/" .. #sequence .. "]"
-        local ok = teleportToCFrame(resolveWaypoint(wp), label)
-        if not ok then
-            warn("[Objectives] Sequence aborted at waypoint", i)
-            return
-        end
-        if i < #sequence then
-            task.wait(wp.delay or DEFAULT_WAYPOINT_DELAY)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- levelGate: blocks until _G.StarterLevel >= minLevel.
+-- Re-anchors to the last CFrame every 15s if player drifted (e.g. blacked out).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local ANCHOR_DRIFT_THRESHOLD = 80   -- studs
+local ANCHOR_CHECK_INTERVAL  = 15   -- seconds
+
+local function runLevelGate(minLevel, anchorCFrame)
+    if currentLevel() >= minLevel then return end
+
+    print(string.format(
+        "[Objectives] Level gate: need lv %d — currently lv %d. Trainer loop will grind here.",
+        minLevel, currentLevel()
+    ))
+
+    local lastAnchorAt = tick()
+
+    while currentLevel() < minLevel do
+        task.wait(2)
+
+        -- Periodically re-anchor if we've drifted (blacked out and teleported away)
+        if anchorCFrame and tick() - lastAnchorAt >= ANCHOR_CHECK_INTERVAL then
+            local ok, hrp = pcall(getHRP)
+            if ok and hrp then
+                local dist = (hrp.Position - (anchorCFrame.Position + Vector3.new(0, 3, 0))).Magnitude
+                if dist > ANCHOR_DRIFT_THRESHOLD then
+                    print(string.format(
+                        "[Objectives] Drifted %.0f studs from level gate anchor — returning (need lv %d, have lv %d).",
+                        dist, minLevel, currentLevel()
+                    ))
+                    hrp.CFrame = anchorCFrame + Vector3.new(0, 3, 0)
+                end
+            end
+            lastAnchorAt = tick()
         end
     end
+
+    print("[Objectives] Level gate passed at lv " .. currentLevel() .. ".")
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Sequence runner
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function runSequence(sequence, matchText)
+    print("[Objectives] Running sequence for:", matchText, "(" .. #sequence .. " waypoint(s))")
+    local lastCFrame = nil  -- anchor for levelGate drift correction
+
+    for i, wp in ipairs(sequence) do
+        if wp.type == "levelGate" then
+            runLevelGate(wp.minLevel, lastCFrame)
+            -- no teleport — just wait then continue to next waypoint
+        else
+            local label = matchText .. " [" .. i .. "/" .. #sequence .. "]"
+            local cf = resolveWaypoint(wp)
+            local ok = teleportToCFrame(cf, label)
+            if not ok then
+                warn("[Objectives] Sequence aborted at waypoint", i)
+                return
+            end
+            lastCFrame = cf
+            if i < #sequence and sequence[i + 1] and sequence[i + 1].type ~= "levelGate" then
+                task.wait(wp.delay or DEFAULT_WAYPOINT_DELAY)
+            end
+        end
+    end
+
     print("[Objectives] Sequence complete:", matchText)
 end
 
@@ -168,9 +229,8 @@ end
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local lastTriggeredMatch = nil
-local autoHunting        = false   -- tracks whether Auto Hunt is currently active
+local autoHunting        = false
 
--- Toggles the Auto Hunt button in the game's UI (jackFunction pattern from source).
 local function toggleAutoHunt()
     for _, desc in ipairs(playerGui:GetDescendants()) do
         if desc.Name == "Toggle" and (desc:IsA("TextButton") or desc:IsA("ImageButton")) then
@@ -181,7 +241,7 @@ local function toggleAutoHunt()
                         pcall(function() firesignal(desc.Activated) end)
                         pcall(function() firesignal(desc.MouseButton1Click) end)
                     elseif getconnections then
-                        for _, c in ipairs(getconnections(desc.Activated))        do pcall(function() c:Fire() end) end
+                        for _, c in ipairs(getconnections(desc.Activated))         do pcall(function() c:Fire() end) end
                         for _, c in ipairs(getconnections(desc.MouseButton1Click)) do pcall(function() c:Fire() end) end
                     end
                     autoHunting = not autoHunting
@@ -197,15 +257,12 @@ end
 local function checkText(text)
     for _, objective in ipairs(ObjectiveConfig) do
         if containsSubstring(text, objective.match) then
-            -- Level guard: if too low, enable auto-hunt and skip teleport
             if objective.minLevel and currentLevel() < objective.minLevel then
                 print("[Objectives] Level too low (" .. currentLevel() .. " < " .. objective.minLevel .. ") for:", objective.match)
                 if not autoHunting then toggleAutoHunt() end
                 return
             end
-            -- If we were auto-hunting and now level is sufficient, stop it
             if autoHunting then toggleAutoHunt() end
-
             if lastTriggeredMatch == objective.match then return end
             lastTriggeredMatch = objective.match
             print("[Objectives] Matched:", objective.match)
@@ -257,13 +314,11 @@ function Objectives.stop()
     print("[Objectives] Stopped.")
 end
 
--- Add or overwrite an objective entry at runtime.
 function Objectives.addObjective(config)
     table.insert(ObjectiveConfig, config)
     print("[Objectives] Added objective:", config.match)
 end
 
--- Reset the debounce so the same objective can retrigger.
 function Objectives.resetMatch()
     lastTriggeredMatch = nil
 end
