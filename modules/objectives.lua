@@ -165,6 +165,8 @@ local function vim_click(x, y)
 end
 
 local function vim_click_once(x, y)
+    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true,  game, 0)
+    task.wait(0.1)
     VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 0)
     task.wait(0.3)
 end
