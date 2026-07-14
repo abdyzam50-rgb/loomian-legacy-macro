@@ -147,7 +147,7 @@ end
 local STARTER_ARROW_X,   STARTER_ARROW_Y   = 206, 272
 local STARTER_SELECT_X,  STARTER_SELECT_Y  = 672, 445
 local STARTER_CONFIRM_X, STARTER_CONFIRM_Y = 824, 194
-local STARTER_DIALOGUE_GAP  = 6    -- seconds of silence before picking
+local STARTER_DIALOGUE_GAP  = 60   -- seconds of silence before picking
 local STARTER_WAIT_TIMEOUT  = 120  -- give up after 2 minutes
 
 local _dialogueModule = nil
