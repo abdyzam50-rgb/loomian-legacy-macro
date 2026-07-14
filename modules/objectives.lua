@@ -150,8 +150,8 @@ local STARTER_CONFIRM_X, STARTER_CONFIRM_Y = 824, 252  -- 194 + 58
 local STARTER_COLOUR_X,  STARTER_COLOUR_Y  = 778, 156  -- dedicated colour-check spot (+58 offset)
 local STARTER_DIALOGUE_GAP  = 60   -- seconds of silence before picking
 local STARTER_WAIT_TIMEOUT  = 120  -- give up after 2 minutes
--- Target colour (light blue-gray of the panel at 778,98) and tolerance
-local ARROW_R, ARROW_G, ARROW_B = 200, 212, 218
+-- Target colour: #DFE6E9 = RGB(223,230,233) — the starter picker panel background
+local ARROW_R, ARROW_G, ARROW_B = 223, 230, 233
 local ARROW_TOLERANCE = 15
 local STARTER_MAX_CYCLES = 50
 
@@ -169,16 +169,42 @@ local function vim_click_once(x, y)
     task.wait(0.3)
 end
 
-local function pixelMatchesArrow(x, y)
+-- Returns r,g,b (0-255) at screen position using readpixel if available,
+-- otherwise reads the topmost visible GUI element's BackgroundColor3.
+local function sampleColor(x, y)
     if readpixel then
         local ok, r, g, b = pcall(readpixel, x, y)
-        if ok and r then
-            return math.abs(r - ARROW_R) <= ARROW_TOLERANCE
-                and math.abs(g - ARROW_G) <= ARROW_TOLERANCE
-                and math.abs(b - ARROW_B) <= ARROW_TOLERANCE
+        if ok and r then return r, g, b end
+    end
+    -- GUI element fallback: find topmost visible non-transparent element at (x,y)
+    local best, bestZ = nil, -math.huge
+    local function scan(obj)
+        for _, child in ipairs(obj:GetChildren()) do
+            if child:IsA("GuiObject") and child.Visible and child.BackgroundTransparency < 1 then
+                local ap = child.AbsolutePosition
+                local as = child.AbsoluteSize
+                if x >= ap.X and x <= ap.X + as.X and y >= ap.Y and y <= ap.Y + as.Y then
+                    local z = child.ZIndex or 1
+                    if z > bestZ then bestZ = z; best = child end
+                end
+            end
+            scan(child)
         end
     end
-    return false  -- no readpixel: never stop early, rely on max cycles
+    scan(playerGui)
+    if best then
+        local c = best.BackgroundColor3
+        return math.round(c.R*255), math.round(c.G*255), math.round(c.B*255)
+    end
+    return nil, nil, nil
+end
+
+local function pixelMatchesArrow(x, y)
+    local r, g, b = sampleColor(x, y)
+    if not r then return false end
+    return math.abs(r - ARROW_R) <= ARROW_TOLERANCE
+        and math.abs(g - ARROW_G) <= ARROW_TOLERANCE
+        and math.abs(b - ARROW_B) <= ARROW_TOLERANCE
 end
 
 local function runStarterPick()
@@ -196,21 +222,17 @@ local function runStarterPick()
 
     -- Wait for screen to fully render
     task.wait(2)
-    if readpixel then
-        for i = 1, STARTER_MAX_CYCLES do
-            local match1 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
-            task.wait(0.1)
-            local match2 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
-            if match1 and match2 then
-                print("[Objectives] Starter picker: colour confirmed at cycle " .. i)
-                break
-            end
-            print("[Objectives] Starter picker: cycling arrow (attempt " .. i .. ")")
-            vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)
-            task.wait(1)
+    for i = 1, STARTER_MAX_CYCLES do
+        local match1 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
+        task.wait(0.1)
+        local match2 = pixelMatchesArrow(STARTER_COLOUR_X, STARTER_COLOUR_Y)
+        if match1 and match2 then
+            print("[Objectives] Starter picker: colour confirmed at cycle " .. i)
+            break
         end
-    else
-        print("[Objectives] Starter picker: readpixel unavailable — picking current starter.")
+        print("[Objectives] Starter picker: cycling arrow (attempt " .. i .. ")")
+        vim_click(STARTER_ARROW_X, STARTER_ARROW_Y)
+        task.wait(1)
     end
 
     vim_click_once(STARTER_SELECT_X, STARTER_SELECT_Y)
