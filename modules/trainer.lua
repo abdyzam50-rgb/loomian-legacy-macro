@@ -1,16 +1,16 @@
 -- trainer.lua
--- Auto-trainer using the game's own BattleClient:doTrainerBattle() API.
--- Reads trainer data from the current map chunk's battles table, finds the
--- NPC model, and calls doTrainerBattle directly — no NPC interaction needed.
--- Two loops: slow (battle initiator) + fast (switch prompt + fast-forward).
+-- Scans the current chunk for all trainers, teleports to the closest one,
+-- fights them via BattleClient:doTrainerBattle, waits for the battle to end,
+-- then waits for heal to complete before repeating.
 
 local Trainer = {}
 
-local Players = game:GetService("Players")
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local localPlayer = Players.LocalPlayer
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Shared _p (same pattern as all other modules)
+-- _p shared cache
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local _p = nil
@@ -18,19 +18,14 @@ local _findPFailedAt = nil
 
 local function findP()
     if _findPFailedAt and os.clock() - _findPFailedAt < 5 then return nil end
-
     if getgc then
         pcall(function()
             for _, v in pairs(getgc(true)) do
-                if typeof(v) == "table" and rawget(v, "Utilities") then
-                    _p = v
-                end
+                if typeof(v) == "table" and rawget(v, "Utilities") then _p = v end
             end
         end)
     end
-
     if _p then _findPFailedAt = nil; return _p end
-
     if debug and debug.getregistry then
         pcall(function()
             for _, fn in pairs(debug.getregistry()) do
@@ -45,7 +40,6 @@ local function findP()
             end
         end)
     end
-
     if _p then _findPFailedAt = nil else _findPFailedAt = os.clock() end
     return _p
 end
@@ -78,12 +72,6 @@ local function getCurrentBattle()
     return safeGet(safeGet(p, "BattleClient"), "currentBattle")
 end
 
-local function getBattleClient()
-    local p = getP()
-    if type(p) ~= "table" then return nil end
-    return safeGet(p, "BattleClient") or safeGet(p, "Battle")
-end
-
 local function skipNpcText()
     local p = getP()
     local chat = type(p) == "table" and safeGet(p, "NPCChat") or nil
@@ -96,39 +84,191 @@ local function skipNpcText()
     end
 end
 
+local function isFullHealth()
+    local p = getP()
+    if type(p) ~= "table" then return true end
+    local network = safeGet(p, "Network")
+    if type(network) ~= "table" or type(network.get) ~= "function" then return true end
+    local ok, result = pcall(function() return network:get("PDS", "areFullHealth") end)
+    return ok and result == true
+end
+
 -- ─────────────────────────────────────────────────────────────────────────────
--- Switch prompt dismissal — fires "No" on the mid-battle swap dialog
+-- Wait helpers
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function waitForBattleEnd(timeout)
+    timeout = timeout or 300
+    local deadline = tick() + timeout
+    while tick() < deadline do
+        if not getCurrentBattle() then return true end
+        task.wait(0.1)
+    end
+    return false
+end
+
+local function waitForFullHealth(timeout)
+    timeout = timeout or 30
+    local deadline = tick() + timeout
+    while tick() < deadline do
+        if isFullHealth() then return true end
+        task.wait(0.5)
+    end
+    return false
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- NPC position extraction
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function getNPCPosition(npc)
+    if not npc then return nil end
+    -- Instance path: Model with PrimaryPart or HumanoidRootPart
+    local ok, pos = pcall(function()
+        if typeof(npc) == "Instance" then
+            local hrp = npc:FindFirstChild("HumanoidRootPart")
+                or npc:FindFirstChildWhichIsA("BasePart")
+            if hrp then return hrp.Position end
+            if npc:IsA("Model") then return npc:GetPivot().Position end
+        end
+        -- Table path: npc.position / npc.Position / npc.model
+        local p = rawget(npc, "position") or rawget(npc, "Position")
+        if p then return p end
+        local model = rawget(npc, "model") or rawget(npc, "Model")
+        if typeof(model) == "Instance" then
+            local hrp = model:FindFirstChild("HumanoidRootPart")
+                or model:FindFirstChildWhichIsA("BasePart")
+            if hrp then return hrp.Position end
+        end
+    end)
+    return ok and pos or nil
+end
+
+local function getPlayerPosition()
+    local char = localPlayer.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    return hrp and hrp.Position or nil
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Scan chunk for all trainers → { id, trainerData, npc, position }
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function getAllTrainers()
+    local p = getP()
+    if type(p) ~= "table" then return {} end
+    local dataManager = safeGet(p, "DataManager")
+    local chunk = dataManager and safeGet(dataManager, "currentChunk")
+    if type(chunk) ~= "table" then return {} end
+
+    local battles = safeGet(chunk, "battles")
+    if type(battles) ~= "table" then return {} end
+
+    -- Build id → npc map from chunk NPCs
+    local npcByBattleId = {}
+    pcall(function()
+        local npcs = chunk:GetNPCs()
+        if type(npcs) ~= "table" then return end
+        for _, npc in pairs(npcs) do
+            local battleNum = safeGet(safeGet(npc, "battle"), "num")
+            if not battleNum then
+                local iv = typeof(npc) == "Instance"
+                    and npc:FindFirstChild("#Battle") or nil
+                battleNum = iv and iv.Value
+            end
+            if battleNum then
+                npcByBattleId[tonumber(battleNum)] = npc
+            end
+        end
+    end)
+
+    local result = {}
+    for id, trainerData in pairs(battles) do
+        local numId = tonumber(id)
+        if numId and type(trainerData) == "table" then
+            local npc = npcByBattleId[numId]
+            local pos = getNPCPosition(npc)
+            table.insert(result, {
+                id          = numId,
+                trainerData = trainerData,
+                npc         = npc,
+                position    = pos,
+            })
+        end
+    end
+    return result
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Find closest trainer to the player
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function findClosestTrainer()
+    local trainers = getAllTrainers()
+    if #trainers == 0 then return nil end
+
+    local playerPos = getPlayerPosition()
+    local best, bestDist = nil, math.huge
+
+    for _, t in ipairs(trainers) do
+        local dist = math.huge
+        if playerPos and t.position then
+            dist = (t.position - playerPos).Magnitude
+        end
+        if dist < bestDist then
+            bestDist = dist
+            best = t
+        end
+    end
+
+    if best then
+        print(string.format("[Trainer] Closest trainer: id=%d  dist=%.1f", best.id, bestDist))
+    end
+    return best
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Teleport next to a trainer NPC
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local function teleportToTrainer(trainer)
+    if not trainer.position then return end
+    local char = localPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    -- Land 3 studs above and 2 studs in front of the trainer
+    hrp.CFrame = CFrame.new(trainer.position + Vector3.new(0, 3, 2))
+    task.wait(0.2)
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Switch prompt dismissal
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local lastSwitchDismissAt = 0
-local SWITCH_DISMISS_COOLDOWN = 0.35
 
 local function dismissSwitchPrompt()
-    if os.clock() - lastSwitchDismissAt < SWITCH_DISMISS_COOLDOWN then return end
-
+    if os.clock() - lastSwitchDismissAt < 0.35 then return end
     local p = getP()
     if type(p) ~= "table" then return end
-
     local battle = getCurrentBattle()
-    if type(battle) ~= "table" then return end
-    if safeGet(battle, "kind") ~= "trainer" then return end
+    if type(battle) ~= "table" or safeGet(battle, "kind") ~= "trainer" then return end
 
     local battleGui = safeGet(p, "BattleGui")
     if type(battleGui) ~= "table" then return end
 
-    -- Try firing the internal yesNo signal with false (= No)
     local fired = false
     pcall(function()
         local yesNo = safeGet(battleGui, "yesNoSignal")
             or safeGet(battleGui, "switchPromptSignal")
             or safeGet(battleGui, "promptSignal")
         if yesNo and type(yesNo.Fire) == "function" then
-            yesNo:Fire(false)
-            fired = true
+            yesNo:Fire(false); fired = true
         end
     end)
 
-    -- Fallback: find and click the No button in the GUI
     if not fired then
         pcall(function()
             local playerGui = localPlayer:FindFirstChild("PlayerGui")
@@ -137,17 +277,11 @@ local function dismissSwitchPrompt()
                 if (desc:IsA("TextButton") or desc:IsA("ImageButton")) and desc.Visible then
                     local t = (desc.Text or ""):lower()
                     if t == "no" or t == "cancel" then
-                        if firesignal then
-                            firesignal(desc.MouseButton1Click)
+                        if firesignal then firesignal(desc.MouseButton1Click)
                         elseif getconnections then
-                            for _, c in ipairs(getconnections(desc.MouseButton1Click)) do
-                                pcall(function() c:Fire() end)
-                            end
-                        else
-                            pcall(function() desc:Activate() end)
-                        end
-                        fired = true
-                        break
+                            for _, c in ipairs(getconnections(desc.MouseButton1Click)) do pcall(function() c:Fire() end) end
+                        else pcall(function() desc:Activate() end) end
+                        fired = true; break
                     end
                 end
             end
@@ -158,62 +292,26 @@ local function dismissSwitchPrompt()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Core: start a trainer battle by trainer ID
--- Reads chunk.battles[id], finds the NPC model, calls doTrainerBattle
+-- Start the battle
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local function startBattle(trainerId)
-    local p = getP()
-    if type(p) ~= "table" then return false, "no _p" end
-
+local function startBattle(trainer)
     if getCurrentBattle() then return false, "Battle already active." end
 
-    local dataManager = safeGet(p, "DataManager")
-    local chunk = dataManager and safeGet(dataManager, "currentChunk")
-    if type(chunk) ~= "table" then return false, "no currentChunk" end
-
-    -- Resolve trainer data from chunk battles table
-    local battles = safeGet(chunk, "battles")
-    local trainerData = type(battles) == "table" and battles[trainerId] or nil
-    if not trainerData then
-        return false, "trainer id " .. tostring(trainerId) .. " not found in chunk"
-    end
-
-    -- Find the matching NPC model
-    local opponentNPC = nil
-    pcall(function()
-        local npcs = chunk:GetNPCs()
-        if type(npcs) ~= "table" then return end
-        for _, npc in pairs(npcs) do
-            local battleNum = safeGet(safeGet(npc, "battle"), "num")
-            if not battleNum then
-                local iv = type(npc) == "table" and safeGet(npc, "#Battle")
-                    or (typeof(npc) == "Instance" and npc:FindFirstChild("#Battle") or nil)
-                battleNum = iv and safeGet(iv, "Value")
-            end
-            if tonumber(battleNum) == tonumber(trainerId) then
-                opponentNPC = npc
-                break
-            end
-        end
-    end)
-
-    if not opponentNPC then
-        return false, "NPC model not found for trainer " .. tostring(trainerId)
-    end
-
-    local battleClient = getBattleClient()
+    local p = getP()
+    if type(p) ~= "table" then return false, "no _p" end
+    local battleClient = safeGet(p, "BattleClient") or safeGet(p, "Battle")
     if type(battleClient) ~= "table" then return false, "no BattleClient" end
+    if not trainer.npc then return false, "no NPC for trainer " .. trainer.id end
 
     skipNpcText()
     pcall(function()
         battleClient:doTrainerBattle({
-            trainer        = trainerData,
-            opponentBaseNPC = opponentNPC,
-            skipStartAnim  = true,
+            trainer         = trainer.trainerData,
+            opponentBaseNPC = trainer.npc,
+            skipStartAnim   = true,
         })
     end)
-
     return true
 end
 
@@ -221,55 +319,61 @@ end
 -- Public API
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local running   = false
-local trainerId = 69     -- default; override with Trainer.setId()
-local delay     = 1.5    -- seconds between battle attempts
+local running = false
 
-function Trainer.start(id)
+function Trainer.start()
     if running then return end
-    if id then trainerId = id end
     running = true
     getP()
 
-    -- Slow loop: re-trigger battles
-    task.spawn(function()
-        print("[Trainer] Auto-trainer started (id=" .. tostring(trainerId) .. ").")
-        local lastWarnAt = 0
-        while running do
-            skipNpcText()
-            local battle = getCurrentBattle()
-            if battle then
-                -- Mid-battle: keep fast-forward on and handle switch prompt
-                local p = getP()
-                local battleGui = type(p) == "table" and safeGet(p, "BattleGui") or nil
-                if type(battleGui) == "table" then
-                    pcall(function() battleGui:setFastForward(true) end)
-                    pcall(function() battleGui.fastForward = true end)
-                end
-                dismissSwitchPrompt()
-            else
-                local ok, err = startBattle(trainerId)
-                if not ok and err ~= "Battle already active." then
-                    if os.clock() - lastWarnAt > 4 then
-                        warn("[Trainer] " .. tostring(err))
-                        lastWarnAt = os.clock()
-                    end
-                end
-            end
-            task.wait(delay)
-        end
-        print("[Trainer] Auto-trainer stopped.")
-    end)
-
-    -- Fast loop: mid-battle handling at 0.08s ticks
+    -- Fast loop: mid-battle switch prompt + fast-forward
     task.spawn(function()
         while running do
             skipNpcText()
+            local p = getP()
             if getCurrentBattle() then
                 dismissSwitchPrompt()
+                local battleGui = type(p) == "table" and safeGet(p, "BattleGui") or nil
+                if type(battleGui) == "table" then
+                    pcall(function() battleGui.fastForward = true end)
+                    pcall(function() battleGui:setFastForward(true) end)
+                end
             end
             task.wait(0.08)
         end
+    end)
+
+    -- Main loop: find closest → teleport → fight → wait → heal → repeat
+    task.spawn(function()
+        print("[Trainer] Auto-trainer started — scanning for nearest trainer.")
+        while running do
+            if getCurrentBattle() then
+                task.wait(0.5)
+            else
+                local trainer = findClosestTrainer()
+                if not trainer then
+                    warn("[Trainer] No trainers found in current chunk.")
+                    task.wait(3)
+                else
+                    teleportToTrainer(trainer)
+                    local ok, err = startBattle(trainer)
+                    if not ok then
+                        warn("[Trainer] startBattle failed: " .. tostring(err))
+                        task.wait(2)
+                    else
+                        print("[Trainer] Battle started vs trainer " .. trainer.id .. " — waiting for end...")
+                        waitForBattleEnd(300)
+                        skipNpcText()
+                        -- Let heal module do its job, then confirm full health before next fight
+                        print("[Trainer] Battle done — waiting for full health...")
+                        waitForFullHealth(30)
+                        print("[Trainer] Ready — finding next trainer...")
+                        task.wait(0.5)
+                    end
+                end
+            end
+        end
+        print("[Trainer] Auto-trainer stopped.")
     end)
 end
 
@@ -278,21 +382,25 @@ function Trainer.stop()
     print("[Trainer] Stopped.")
 end
 
-function Trainer.setId(id)
-    trainerId = id
-    print("[Trainer] Trainer ID set to: " .. tostring(id))
+-- One-shot: fight the closest trainer right now
+function Trainer.fightNearest()
+    local trainer = findClosestTrainer()
+    if not trainer then warn("[Trainer] No trainers found.") return end
+    teleportToTrainer(trainer)
+    local ok, err = startBattle(trainer)
+    if not ok then warn("[Trainer] fightNearest failed: " .. tostring(err)) end
 end
 
-function Trainer.setDelay(d)
-    delay = d
-    print("[Trainer] Delay set to: " .. tostring(d) .. "s")
-end
-
--- Fire one battle immediately (no loop)
-function Trainer.fightNow(id)
-    local ok, err = startBattle(id or trainerId)
-    if not ok then warn("[Trainer] fightNow failed: " .. tostring(err)) end
-    return ok
+-- List all trainers in the current chunk (for debugging)
+function Trainer.listTrainers()
+    local trainers = getAllTrainers()
+    local playerPos = getPlayerPosition()
+    print("[Trainer] Found " .. #trainers .. " trainer(s) in chunk:")
+    for _, t in ipairs(trainers) do
+        local dist = (playerPos and t.position) and
+            string.format("%.1f studs", (t.position - playerPos).Magnitude) or "unknown dist"
+        print(string.format("  id=%-4d  %s  hasNPC=%s", t.id, dist, tostring(t.npc ~= nil)))
+    end
 end
 
 return Trainer
